@@ -1,6 +1,7 @@
 package com.tongji.knowpost.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.tongji.cache.hotkey.HotKeyDetector;
@@ -45,6 +46,7 @@ class KnowPostServiceImplTest {
     private StringRedisTemplate redis;
     private ValueOperations<String, String> valueOperations;
     private Cache<String, KnowPostDetailResponse> detailCache;
+    private ObjectMapper objectMapper;
     private KnowPostServiceImpl service;
 
     @BeforeEach
@@ -54,13 +56,14 @@ class KnowPostServiceImplTest {
         redis = mock(StringRedisTemplate.class);
         valueOperations = mock(ValueOperations.class);
         detailCache = Caffeine.newBuilder().build();
+        objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
         when(redis.opsForValue()).thenReturn(valueOperations);
 
         service = new KnowPostServiceImpl(
                 mapper,
                 mock(SnowflakeIdGenerator.class),
-                new ObjectMapper(),
+                objectMapper,
                 mock(OssProperties.class),
                 counterService,
                 mock(UserCounterService.class),
@@ -88,7 +91,7 @@ class KnowPostServiceImplTest {
     void redisCacheHitStillRejectsAnonymousViewerForPrivatePost() throws Exception {
         KnowPostDetailResponse cached = detailResponse("private");
         when(valueOperations.get(DETAIL_KEY))
-                .thenReturn(new ObjectMapper().writeValueAsString(cached))
+                .thenReturn(objectMapper.writeValueAsString(cached))
                 .thenReturn(null);
         when(mapper.findDetailById(POST_ID)).thenReturn(detailRow("published", "private"));
 
