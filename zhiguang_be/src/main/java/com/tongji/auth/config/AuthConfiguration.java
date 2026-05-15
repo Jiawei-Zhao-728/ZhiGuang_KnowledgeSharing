@@ -9,12 +9,19 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
@@ -71,7 +78,34 @@ public class AuthConfiguration {
      * @return 基于 RSA 公钥的 {@link JwtDecoder}。
      */
     @Bean
+    @Primary
     public JwtDecoder jwtDecoder() {
+        return buildJwtDecoder();
+    }
+
+    /**
+     * 创建资源服务器专用的 Access Token 解码器。
+     *
+     * <p>Refresh Token 也由同一密钥签发，需要在资源服务器入口拒绝，避免长有效期令牌被当作 Bearer Access Token 使用。</p>
+     *
+     * @return 仅接受 {@code token_type=access} 的 {@link JwtDecoder}。
+     */
+    @Bean
+    public JwtDecoder accessTokenJwtDecoder() {
+        NimbusJwtDecoder decoder = buildJwtDecoder();
+        OAuth2TokenValidator<Jwt> accessTokenValidator = jwt -> {
+            String tokenType = jwt.getClaimAsString("token_type");
+            if ("access".equals(tokenType)) {
+                return OAuth2TokenValidatorResult.success();
+            }
+            OAuth2Error error = new OAuth2Error("invalid_token", "JWT token_type must be access", null);
+            return OAuth2TokenValidatorResult.failure(error);
+        };
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(JwtValidators.createDefault(), accessTokenValidator));
+        return decoder;
+    }
+
+    private NimbusJwtDecoder buildJwtDecoder() {
         AuthProperties.Jwt jwtProps = properties.getJwt();
         RSAPublicKey publicKey = PemUtils.readPublicKey(jwtProps.getPublicKey());
         return NimbusJwtDecoder.withPublicKey(publicKey).build();
