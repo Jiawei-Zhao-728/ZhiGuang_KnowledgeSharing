@@ -47,12 +47,14 @@ public class RagIndexService {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {
             log.warn("Post {} not found", postId);
+            deleteExistingChunks(postId);
             return 0;
         }
 
         // 仅索引公开的已发布知文
-        if (!"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
-            log.warn("Post {} is not public/published, skip indexing", postId);
+        if (!isPublicPublished(row)) {
+            log.warn("Post {} is not public/published, clear existing chunks", postId);
+            deleteExistingChunks(postId);
             return 0;
         }
 
@@ -105,6 +107,11 @@ public class RagIndexService {
         }
         // 返回本次写入的切片数量
         return docs.size();
+    }
+
+    public boolean isPublicPublished(long postId) {
+        KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+        return row != null && isPublicPublished(row);
     }
 
     /**
@@ -165,6 +172,10 @@ public class RagIndexService {
     private static String asString(Object o) {
         // 统一处理 null → String 的转换
         return o == null ? null : String.valueOf(o);
+    }
+
+    private boolean isPublicPublished(KnowPostDetailRow row) {
+        return "published".equalsIgnoreCase(row.getStatus()) && "public".equalsIgnoreCase(row.getVisible());
     }
 
     /**

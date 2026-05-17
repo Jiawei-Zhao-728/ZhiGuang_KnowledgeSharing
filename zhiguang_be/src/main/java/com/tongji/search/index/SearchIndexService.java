@@ -81,6 +81,12 @@ public class SearchIndexService {
             KnowPostDetailRow row = knowPostMapper.findDetailById(id);
             if (row == null) {
                 log.warn("Index upsert skipped: post {} not found", id);
+                softDeleteKnowPost(id);
+                return;
+            }
+            if (!isPublicPublished(row)) {
+                log.info("Index upsert converted to delete for non-public post {}", id);
+                softDeleteKnowPost(id);
                 return;
             }
             Map<String, Object> doc = new HashMap<>();
@@ -96,6 +102,7 @@ public class SearchIndexService {
                 doc.put("publish_time", row.getPublishTime().toEpochMilli());
             }
             doc.put("status", row.getStatus());
+            doc.put("visible", row.getVisible());
             doc.put("tags", parseStringArray(row.getTags()));
             doc.put("img_urls", parseStringArray(row.getImgUrls()));
             if (row.getIsTop() != null) {
@@ -178,6 +185,10 @@ public class SearchIndexService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private boolean isPublicPublished(KnowPostDetailRow row) {
+        return "published".equals(row.getStatus()) && "public".equals(row.getVisible());
     }
 
     private Charset pickCharset(byte[] bytes, Charset headerCharset, Charset metaCharset) {
