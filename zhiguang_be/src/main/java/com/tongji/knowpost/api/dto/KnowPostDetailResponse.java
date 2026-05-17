@@ -23,6 +23,7 @@ public record KnowPostDetailResponse(
         Boolean faved,
         Boolean isTop,
         String visible,
+        String status,
         String type,
         Instant publishTime
 ) {}
