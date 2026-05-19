@@ -238,6 +238,15 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // Visibility changes must be reflected in search so private content is removed from ES.
+        try {
+            long outId = idGen.nextId();
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
+            outboxMapper.insert(outId, "knowpost", id, "KnowPostVisibilityUpdated", payload);
+        } catch (Exception e) {
+            log.warn("Outbox event after visibility update failed, post {}: {}", id, e.getMessage());
+        }
+
         invalidateCache(id);
     }
 
