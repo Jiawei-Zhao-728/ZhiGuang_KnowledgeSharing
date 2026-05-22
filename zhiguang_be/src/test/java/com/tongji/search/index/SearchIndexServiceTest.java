@@ -1,11 +1,14 @@
 package com.tongji.search.index;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch.core.IndexRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tongji.counter.service.CounterService;
 import com.tongji.knowpost.mapper.KnowPostMapper;
 import com.tongji.knowpost.model.KnowPostDetailRow;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -28,9 +31,9 @@ class SearchIndexServiceTest {
 
         service.upsertKnowPost(42L);
 
-        verify(es).index(org.mockito.ArgumentMatchers.argThat(request ->
+        verify(es).index(org.mockito.ArgumentMatchers.<IndexRequest<Map<String, Object>>>argThat(request ->
                 "42".equals(request.id())
-                        && request.document() instanceof java.util.Map<?, ?> doc
+                        && request.document() instanceof Map<?, ?> doc
                         && "deleted".equals(doc.get("status"))
         ));
     }
