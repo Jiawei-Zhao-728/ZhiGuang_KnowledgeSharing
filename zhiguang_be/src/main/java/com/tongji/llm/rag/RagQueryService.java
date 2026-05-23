@@ -1,5 +1,9 @@
 package com.tongji.llm.rag;
 
+import com.tongji.common.exception.BusinessException;
+import com.tongji.common.exception.ErrorCode;
+import com.tongji.knowpost.mapper.KnowPostMapper;
+import com.tongji.knowpost.model.KnowPostDetailRow;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
@@ -26,13 +30,16 @@ public class RagQueryService {
     private final ChatClient chatClient;
     // 索引服务：确保帖子在问答前已建立/更新索引
     private final RagIndexService indexService;
+    private final KnowPostMapper knowPostMapper;
 
     /**
      * 使用 WebFlux 返回回答内容的流。
      */
     public Flux<String> streamAnswerFlux(long postId, String question, int topK, int maxTokens) {
+        assertPubliclyQueryable(postId);
         // 轻量保障：如索引不存在或指纹未变更则跳过，否则重建
         indexService.ensureIndexed(postId);
+        assertPubliclyQueryable(postId);
 
         // 检索上下文：先宽召回，再按 postId 做服务端过滤
         List<String> contexts = searchContexts(String.valueOf(postId), question, Math.max(1, topK));
@@ -55,6 +62,15 @@ public class RagQueryService {
                         .build())
                 .stream()  // 以流式（SSE）返回模型输出
                 .content(); // 转换为 Flux<String>
+    }
+
+    private void assertPubliclyQueryable(long postId) {
+        KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+        if (row == null
+                || !"published".equalsIgnoreCase(row.getStatus())
+                || !"public".equalsIgnoreCase(row.getVisible())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在或无权限");
+        }
     }
 
     /**
