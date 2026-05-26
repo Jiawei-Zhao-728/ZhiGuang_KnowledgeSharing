@@ -218,6 +218,15 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 可见性变化会影响搜索可发现性，必须驱动索引重新判定或移除。
+        try {
+            long outId = idGen.nextId();
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
+            outboxMapper.insert(outId, "knowpost", id, "KnowPostVisibilityUpdated", payload);
+        } catch (Exception e) {
+            log.warn("Outbox event after visibility update failed, post {}: {}", id, e.getMessage());
+        }
+
         invalidateCache(id);
     }
 
@@ -324,6 +333,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            assertCanViewDetail(id, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -457,6 +467,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         try {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            assertCanViewDetail(id, uid);
 
             // L1 填充
             knowPostDetailCache.put(pageKey, base);
@@ -468,9 +479,25 @@ public class KnowPostServiceImpl implements KnowPostService {
             
             // 5. 叠加实时数据（计数与用户状态）并返回
             return enrichDetailResponse(base, uid, true);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
+        }
+    }
+
+    private void assertCanViewDetail(long id, Long currentUserIdNullable) {
+        KnowPostDetailRow row = mapper.findDetailById(id);
+        if (row == null || "deleted".equals(row.getStatus())) {
+            invalidateCache(id);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
+        }
+
+        boolean isPublic = "published".equals(row.getStatus()) && "public".equals(row.getVisible());
+        boolean isOwner = currentUserIdNullable != null && row.getCreatorId() != null && currentUserIdNullable.equals(row.getCreatorId());
+        if (!isPublic && !isOwner) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
         }
     }
 

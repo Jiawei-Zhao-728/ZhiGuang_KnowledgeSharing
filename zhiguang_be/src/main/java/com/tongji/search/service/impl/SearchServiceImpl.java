@@ -12,6 +12,8 @@ import co.elastic.clients.util.NamedValue;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.tongji.knowpost.api.dto.FeedItemResponse;
 import com.tongji.counter.service.CounterService;
+import com.tongji.knowpost.mapper.KnowPostMapper;
+import com.tongji.knowpost.model.KnowPostDetailRow;
 import com.tongji.search.api.dto.SearchResponse;
 import com.tongji.search.api.dto.SuggestResponse;
 import com.tongji.search.service.SearchService;
@@ -37,6 +39,7 @@ public class SearchServiceImpl implements SearchService {
 
     private final ElasticsearchClient es;
     private final CounterService counterService;
+    private final KnowPostMapper knowPostMapper;
     /**
      * ES 索引名：zhiguang 内容统一索引。
      */
@@ -113,6 +116,10 @@ public class SearchServiceImpl implements SearchService {
                 continue;
             }
             String id = asString(source.get("content_id"));
+            if (!isPublishedPublic(id)) {
+                continue;
+            }
+
             String title = asString(source.get("title"));
             String descriptionFromDoc = asString(source.get("description"));
             String snippet = buildSnippet(hit);
@@ -145,7 +152,7 @@ public class SearchServiceImpl implements SearchService {
         }
 
         String nextAfter = null;
-        boolean hasMore = items.size() >= size;
+        boolean hasMore = hits.size() >= size;
 
         if (!hits.isEmpty()) {
             List<FieldValue> sv = hits.getLast().sort();
@@ -156,6 +163,16 @@ public class SearchServiceImpl implements SearchService {
         }
 
         return new SearchResponse(items, nextAfter, hasMore);
+    }
+
+    private boolean isPublishedPublic(String id) {
+        Long contentId = parseLong(id);
+        if (contentId == null) {
+            return false;
+        }
+
+        KnowPostDetailRow row = knowPostMapper.findDetailById(contentId);
+        return row != null && "published".equals(row.getStatus()) && "public".equals(row.getVisible());
     }
 
     /**
@@ -286,6 +303,18 @@ public class SearchServiceImpl implements SearchService {
         }
 
         return String.valueOf(fv._get());
+    }
+
+    private Long parseLong(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+
+        try {
+            return Long.parseLong(text);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
