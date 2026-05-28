@@ -12,6 +12,8 @@ import co.elastic.clients.util.NamedValue;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.tongji.knowpost.api.dto.FeedItemResponse;
 import com.tongji.counter.service.CounterService;
+import com.tongji.knowpost.mapper.KnowPostMapper;
+import com.tongji.knowpost.model.KnowPostDetailRow;
 import com.tongji.search.api.dto.SearchResponse;
 import com.tongji.search.api.dto.SuggestResponse;
 import com.tongji.search.service.SearchService;
@@ -37,6 +39,7 @@ public class SearchServiceImpl implements SearchService {
 
     private final ElasticsearchClient es;
     private final CounterService counterService;
+    private final KnowPostMapper knowPostMapper;
     /**
      * ES 索引名：zhiguang 内容统一索引。
      */
@@ -113,6 +116,9 @@ public class SearchServiceImpl implements SearchService {
                 continue;
             }
             String id = asString(source.get("content_id"));
+            if (!isSearchVisible(id)) {
+                continue;
+            }
             String title = asString(source.get("title"));
             String descriptionFromDoc = asString(source.get("description"));
             String snippet = buildSnippet(hit);
@@ -158,6 +164,20 @@ public class SearchServiceImpl implements SearchService {
         return new SearchResponse(items, nextAfter, hasMore);
     }
 
+    private boolean isSearchVisible(String id) {
+        if (id == null || id.isBlank()) {
+            return false;
+        }
+        try {
+            KnowPostDetailRow row = knowPostMapper.findDetailById(Long.parseLong(id));
+            return row != null
+                    && "published".equalsIgnoreCase(row.getStatus())
+                    && "public".equalsIgnoreCase(row.getVisible());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /**
      * 联想建议：Completion Suggester，取 title_suggest 的候选文本。
      */
@@ -182,7 +202,9 @@ public class SearchServiceImpl implements SearchService {
                     if (comp != null && comp.options() != null) {
                         for (var opt : comp.options()) {
                             String text = opt.text();
-                            if (text != null && !text.isBlank()) {
+                            Map<String, Object> source = opt.source();
+                            String id = source == null ? null : asString(source.get("content_id"));
+                            if (text != null && !text.isBlank() && isSearchVisible(id)) {
                                 items.add(text);
                             }
                         }
