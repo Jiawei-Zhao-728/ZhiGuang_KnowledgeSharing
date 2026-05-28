@@ -2,12 +2,18 @@ package com.tongji.auth.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -67,8 +73,23 @@ public class SecurityConfig {
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
-                .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()));
+                .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt
+                        .jwtAuthenticationConverter(accessTokenAuthenticationConverter())));
         return http.build();
+    }
+
+    @Bean
+    public Converter<Jwt, ? extends AbstractAuthenticationToken> accessTokenAuthenticationConverter() {
+        return jwt -> {
+            if (!"access".equals(jwt.getClaimAsString("token_type"))) {
+                throw new OAuth2AuthenticationException(new OAuth2Error(
+                        "invalid_token",
+                        "Only access tokens may be used as bearer tokens",
+                        null
+                ));
+            }
+            return new JwtAuthenticationToken(jwt, List.of());
+        };
     }
 
     /**

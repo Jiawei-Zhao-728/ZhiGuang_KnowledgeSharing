@@ -1,5 +1,9 @@
 package com.tongji.llm.rag;
 
+import com.tongji.common.exception.BusinessException;
+import com.tongji.common.exception.ErrorCode;
+import com.tongji.knowpost.mapper.KnowPostMapper;
+import com.tongji.knowpost.model.KnowPostDetailRow;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
@@ -26,16 +30,25 @@ public class RagQueryService {
     private final ChatClient chatClient;
     // 索引服务：确保帖子在问答前已建立/更新索引
     private final RagIndexService indexService;
+    private final KnowPostMapper knowPostMapper;
 
     /**
      * 使用 WebFlux 返回回答内容的流。
      */
     public Flux<String> streamAnswerFlux(long postId, String question, int topK, int maxTokens) {
+        KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+        if (row == null || !"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在或无权限");
+        }
+
+        int safeTopK = Math.min(Math.max(1, topK), 20);
+        int safeMaxTokens = Math.min(Math.max(1, maxTokens), 2048);
+
         // 轻量保障：如索引不存在或指纹未变更则跳过，否则重建
         indexService.ensureIndexed(postId);
 
         // 检索上下文：先宽召回，再按 postId 做服务端过滤
-        List<String> contexts = searchContexts(String.valueOf(postId), question, Math.max(1, topK));
+        List<String> contexts = searchContexts(String.valueOf(postId), question, safeTopK);
         // 组装上下文文本，分隔符用于提示词中分块标识
         String context = String.join("\n\n---\n\n", contexts);
 
@@ -51,7 +64,7 @@ public class RagQueryService {
                 .options(DeepSeekChatOptions.builder()
                         .model("deepseek-chat") // 指定 DeepSeek 模型
                         .temperature(0.2)       // 低温度：更稳健、少发散
-                        .maxTokens(maxTokens)    // 控制最大输出长度
+                        .maxTokens(safeMaxTokens) // 控制最大输出长度
                         .build())
                 .stream()  // 以流式（SSE）返回模型输出
                 .content(); // 转换为 Flux<String>
