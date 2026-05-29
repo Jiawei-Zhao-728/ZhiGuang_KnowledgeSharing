@@ -171,6 +171,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             log.warn("Outbox event after metadata update failed, post {}: {}", id, e.getMessage());
         }
 
+        refreshRagIndex(id);
         invalidateCache(id);
     }
 
@@ -179,6 +180,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void publish(long creatorId, long id) {
+        invalidateCache(id);
+
         int updated = mapper.publish(id, creatorId);
 
         if (updated == 0) {
@@ -203,6 +206,8 @@ public class KnowPostServiceImpl implements KnowPostService {
         } catch (Exception e) {
             log.warn("Pre-index after publish failed, post {}: {}", id, e.getMessage());
         }
+
+        invalidateCache(id);
     }
 
     /**
@@ -218,6 +223,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        writeSearchOutbox(id, "KnowPostVisibilityUpdated");
+        refreshRagIndex(id);
         invalidateCache(id);
     }
 
@@ -262,7 +269,34 @@ public class KnowPostServiceImpl implements KnowPostService {
             log.warn("Outbox event after delete failed, post {}: {}", id, e.getMessage());
         }
 
+        purgeRagIndex(id);
         invalidateCache(id);
+    }
+
+    private void writeSearchOutbox(long id, String eventType) {
+        try {
+            long outId = idGen.nextId();
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
+            outboxMapper.insert(outId, "knowpost", id, eventType, payload);
+        } catch (Exception e) {
+            log.warn("Outbox event {} failed for post {}: {}", eventType, id, e.getMessage());
+        }
+    }
+
+    private void refreshRagIndex(long id) {
+        try {
+            ragIndexService.ensureIndexed(id);
+        } catch (Exception e) {
+            log.warn("RAG index refresh failed for post {}: {}", id, e.getMessage());
+        }
+    }
+
+    private void purgeRagIndex(long id) {
+        try {
+            ragIndexService.purgePostIndex(id);
+        } catch (Exception e) {
+            log.warn("RAG index purge failed for post {}: {}", id, e.getMessage());
+        }
     }
 
     private boolean isValidVisible(String visible) {
@@ -324,6 +358,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            assertCachedDetailVisible(local, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -457,6 +492,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         try {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            assertCachedDetailVisible(base, uid);
 
             // L1 填充
             knowPostDetailCache.put(pageKey, base);
@@ -468,8 +504,26 @@ public class KnowPostServiceImpl implements KnowPostService {
             
             // 5. 叠加实时数据（计数与用户状态）并返回
             return enrichDetailResponse(base, uid, true);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
+            return null;
+        }
+    }
+
+    private void assertCachedDetailVisible(KnowPostDetailResponse base, Long uid) {
+        boolean isOwner = uid != null && base.authorId() != null && uid.equals(parseLongOrNull(base.authorId()));
+        boolean isPublishedPublic = "public".equals(base.visible()) && base.publishTime() != null;
+        if (!isPublishedPublic && !isOwner) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+        }
+    }
+
+    private Long parseLongOrNull(String value) {
+        try {
+            return value == null ? null : Long.parseLong(value);
+        } catch (NumberFormatException e) {
             return null;
         }
     }

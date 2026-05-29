@@ -7,11 +7,12 @@ import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.FieldValueFactorModifier;
 import co.elastic.clients.elasticsearch._types.query_dsl.FunctionBoostMode;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
-import co.elastic.clients.elasticsearch.core.search.Suggestion;
 import co.elastic.clients.util.NamedValue;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.tongji.knowpost.api.dto.FeedItemResponse;
 import com.tongji.counter.service.CounterService;
+import com.tongji.knowpost.mapper.KnowPostMapper;
+import com.tongji.knowpost.model.KnowPostDetailRow;
 import com.tongji.search.api.dto.SearchResponse;
 import com.tongji.search.api.dto.SuggestResponse;
 import com.tongji.search.service.SearchService;
@@ -37,6 +38,7 @@ public class SearchServiceImpl implements SearchService {
 
     private final ElasticsearchClient es;
     private final CounterService counterService;
+    private final KnowPostMapper knowPostMapper;
     /**
      * ES 索引名：zhiguang 内容统一索引。
      */
@@ -113,6 +115,9 @@ public class SearchServiceImpl implements SearchService {
                 continue;
             }
             String id = asString(source.get("content_id"));
+            if (!isPublicSearchResult(id)) {
+                continue;
+            }
             String title = asString(source.get("title"));
             String descriptionFromDoc = asString(source.get("description"));
             String snippet = buildSnippet(hit);
@@ -166,31 +171,46 @@ public class SearchServiceImpl implements SearchService {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map<String, Object>> resp;
         try {
             resp = es.search(s -> s.index(INDEX)
-                    .suggest(sug -> sug.suggesters("title_suggest",
-                            sc -> sc.prefix(prefix).completion(c -> c.field("title_suggest").size(size))))
+                    .size(Math.max(size * 3, size))
+                    .query(q -> q.bool(b -> b
+                            .must(m -> m.matchPhrasePrefix(mp -> mp.field("title").query(prefix)))
+                            .filter(f -> f.term(t -> t.field("status")
+                                    .value(v -> v.stringValue("published"))))))
                     , (Class<Map<String, Object>>)(Class<?>) Map.class);
         } catch (Exception e) {
             return new SuggestResponse(Collections.emptyList());
         }
         List<String> items = new ArrayList<>();
         try {
-            var sugg = resp.suggest();
-            List<Suggestion<Map<String, Object>>> entry = sugg == null ? null : sugg.get("title_suggest");
-            if (entry != null) {
-                for (var s : entry) {
-                    var comp = s.completion();
-                    if (comp != null && comp.options() != null) {
-                        for (var opt : comp.options()) {
-                            String text = opt.text();
-                            if (text != null && !text.isBlank()) {
-                                items.add(text);
-                            }
-                        }
-                    }
+            List<Hit<Map<String, Object>>> hits = resp.hits() == null ? Collections.emptyList() : resp.hits().hits();
+            for (Hit<Map<String, Object>> hit : hits) {
+                Map<String, Object> source = hit.source();
+                if (source == null || !isPublicSearchResult(asString(source.get("content_id")))) {
+                    continue;
+                }
+                String title = asString(source.get("title"));
+                if (title != null && !title.isBlank() && !items.contains(title)) {
+                    items.add(title);
+                    if (items.size() >= size) break;
                 }
             }
         } catch (Exception ignored) {}
         return new SuggestResponse(items);
+    }
+
+    private boolean isPublicSearchResult(String id) {
+        Long postId = asLong(id);
+        if (postId == null) {
+            return false;
+        }
+        try {
+            KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+            return row != null
+                    && "published".equals(row.getStatus())
+                    && "public".equals(row.getVisible());
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**
