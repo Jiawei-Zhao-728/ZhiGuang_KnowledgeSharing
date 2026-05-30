@@ -23,6 +23,10 @@ type AuthTokens = {
   expiresAt: number;
 };
 
+type FetchUserOptions = {
+  clearOnFailure?: boolean;
+};
+
 type AuthContextValue = {
   user: AuthenticatedUser | null;
   isLoading: boolean;
@@ -115,35 +119,30 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<AuthenticatedUser | null>(() => readStoredUser());
   const [isLoading, setIsLoading] = useState<boolean>(!!tokens);
   const fetchingRef = useRef<Promise<void> | null>(null);
+  const suppressNextTokenFetchRef = useRef(false);
 
-  const fetchUser = useCallback(async (accessToken: string) => {
+  const clearSession = useCallback(() => {
+    setUser(null);
+    setTokens(null);
+    persistTokens(null);
+    persistUser(null);
+  }, []);
+
+  const fetchUser = useCallback(async (accessToken: string, options: FetchUserOptions = {}) => {
+    const { clearOnFailure = true } = options;
     try {
       const profile = await authService.fetchCurrentUser(accessToken);
       setUser(profile);
       persistUser(profile);
+      return true;
     } catch (error) {
       console.error("获取用户信息失败", error);
-      setUser(null);
-      setTokens(null);
-      persistTokens(null);
-      persistUser(null);
+      if (clearOnFailure) {
+        clearSession();
+      }
+      return false;
     }
-  }, []);
-
-  useEffect(() => {
-    if (!tokens) {
-      setIsLoading(false);
-      return;
-    }
-
-    if (!fetchingRef.current) {
-      const task = fetchUser(tokens.accessToken).finally(() => {
-        fetchingRef.current = null;
-        setIsLoading(false);
-      });
-      fetchingRef.current = task;
-    }
-  }, [tokens, fetchUser]);
+  }, [clearSession]);
 
   
 
@@ -151,11 +150,12 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     async (payload: LoginRequest) => {
       const response = await authService.login(payload);
       const nextTokens = toTokens(response.token);
+      suppressNextTokenFetchRef.current = true;
       setTokens(nextTokens);
       persistTokens(nextTokens);
       setUser(response.user);
       persistUser(response.user);
-      await fetchUser(nextTokens.accessToken);
+      await fetchUser(nextTokens.accessToken, { clearOnFailure: false });
     },
     [fetchUser]
   );
@@ -164,13 +164,14 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     const result = await authService.register(payload);
     // 注册成功后直接登录：写入令牌与用户信息
     const nextTokens = toTokens(result.token);
+    suppressNextTokenFetchRef.current = true;
     setTokens(nextTokens);
     persistTokens(nextTokens);
     const userInfo = result.user as AuthenticatedUser;
     setUser(userInfo);
     persistUser(userInfo);
     // 为保证信息最新，拉取一次 /auth/me
-    await fetchUser(nextTokens.accessToken);
+    await fetchUser(nextTokens.accessToken, { clearOnFailure: false });
     return userInfo;
   }, [fetchUser]);
 
@@ -182,11 +183,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         console.warn("注销请求失败，继续清除本地状态", error);
       }
     }
-    setTokens(null);
-    setUser(null);
-    persistTokens(null);
-    persistUser(null);
-  }, [tokens]);
+    clearSession();
+  }, [tokens, clearSession]);
 
   const refresh = useCallback(async () => {
     if (!tokens) return;
@@ -196,9 +194,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       }
       const result = await authService.refresh(tokens.refreshToken);
       const nextTokens = toTokens(result);
+      suppressNextTokenFetchRef.current = true;
       setTokens(nextTokens);
       persistTokens(nextTokens);
-      await fetchUser(nextTokens.accessToken);
+      await fetchUser(nextTokens.accessToken, { clearOnFailure: false });
     } catch (error) {
       console.error("刷新登录状态失败", error);
       await logout();
@@ -209,6 +208,30 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     if (!tokens) return;
     await fetchUser(tokens.accessToken);
   }, [tokens, fetchUser]);
+
+  useEffect(() => {
+    if (!tokens) {
+      setIsLoading(false);
+      return;
+    }
+
+    if (suppressNextTokenFetchRef.current) {
+      suppressNextTokenFetchRef.current = false;
+      setIsLoading(false);
+      return;
+    }
+
+    if (!fetchingRef.current) {
+      const task = Promise.resolve(Date.now() >= tokens.expiresAt - 5_000
+        ? refresh()
+        : fetchUser(tokens.accessToken)
+      ).then(() => undefined).finally(() => {
+        fetchingRef.current = null;
+        setIsLoading(false);
+      });
+      fetchingRef.current = task;
+    }
+  }, [tokens, fetchUser, refresh]);
 
   useEffect(() => {
     if (!tokens) {

@@ -83,6 +83,11 @@ public class SearchIndexService {
                 log.warn("Index upsert skipped: post {} not found", id);
                 return;
             }
+            if (!isPubliclySearchable(row)) {
+                softDeleteKnowPost(id);
+                log.info("Index upsert converted to soft delete for non-public post {}", id);
+                return;
+            }
             Map<String, Object> doc = new HashMap<>();
             doc.put("content_id", row.getId());
             doc.put("content_type", row.getType());
@@ -96,6 +101,7 @@ public class SearchIndexService {
                 doc.put("publish_time", row.getPublishTime().toEpochMilli());
             }
             doc.put("status", row.getStatus());
+            doc.put("visible", row.getVisible());
             doc.put("tags", parseStringArray(row.getTags()));
             doc.put("img_urls", parseStringArray(row.getImgUrls()));
             if (row.getIsTop() != null) {
@@ -152,6 +158,10 @@ public class SearchIndexService {
         } catch (Exception e) {
             log.error("Index soft delete failed for post {}: {}", id, e.getMessage());
         }
+    }
+
+    boolean isPubliclySearchable(KnowPostDetailRow row) {
+        return row != null && "published".equals(row.getStatus()) && "public".equals(row.getVisible());
     }
 
     /**

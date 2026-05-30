@@ -1,13 +1,16 @@
 package com.tongji.auth.config;
 
+import com.tongji.auth.token.AccessTokenAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -44,7 +47,8 @@ public class SecurityConfig {
      * @throws Exception 构建过滤链过程中可能抛出的异常。
      */
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                                   AccessTokenAuthenticationFilter accessTokenAuthenticationFilter) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
@@ -57,6 +61,8 @@ public class SecurityConfig {
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/knowposts/detail/*").permitAll()
                         // 知文详情页 RAG 问答（SSE 流式输出）允许匿名访问
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/knowposts/*/qa/stream").permitAll()
+                        // 搜索仅返回公开内容，允许匿名使用
+                        .requestMatchers(HttpMethod.GET, "/api/v1/search", "/api/v1/search/suggest").permitAll()
                         .requestMatchers(
                                 "/api/v1/auth/send-code",
                                 "/api/v1/auth/register",
@@ -67,7 +73,8 @@ public class SecurityConfig {
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
-                .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()));
+                .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()))
+                .addFilterAfter(accessTokenAuthenticationFilter, BearerTokenAuthenticationFilter.class);
         return http.build();
     }
 
