@@ -26,7 +26,7 @@ public class AccessTokenAuthenticationFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication != null && authentication.isAuthenticated()
+        if (authentication != null
                 && authentication.getPrincipal() instanceof Jwt jwt
                 && !TOKEN_TYPE_ACCESS.equals(jwt.getClaimAsString(CLAIM_TOKEN_TYPE))) {
             SecurityContextHolder.clearContext();
