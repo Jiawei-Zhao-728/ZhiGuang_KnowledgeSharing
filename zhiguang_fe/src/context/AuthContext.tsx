@@ -222,10 +222,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     }
 
     if (!fetchingRef.current) {
-      const task = (Date.now() >= tokens.expiresAt - 5_000
+      const task = Promise.resolve(Date.now() >= tokens.expiresAt - 5_000
         ? refresh()
         : fetchUser(tokens.accessToken)
-      ).finally(() => {
+      ).then(() => undefined).finally(() => {
         fetchingRef.current = null;
         setIsLoading(false);
       });
