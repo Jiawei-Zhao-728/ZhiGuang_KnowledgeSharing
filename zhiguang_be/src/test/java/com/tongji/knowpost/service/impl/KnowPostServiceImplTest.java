@@ -83,12 +83,6 @@ class KnowPostServiceImplTest {
                 outboxMapper
         );
 
-        when(redis.opsForValue()).thenReturn(valueOperations);
-        when(redis.getExpire(anyString())).thenReturn(0L);
-        when(redis.expire(anyString(), any(Duration.class))).thenReturn(true);
-        when(hotKey.ttlForPublic(anyInt(), anyString())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(counterService.getCounts(eq("knowpost"), anyString(), anyList()))
-                .thenReturn(Map.of("like", 0L, "fav", 0L));
     }
 
     @Test
@@ -106,6 +100,11 @@ class KnowPostServiceImplTest {
     @Test
     void cachedPublicPublishedDetailCanBeServedAnonymously() {
         long postId = 42L;
+        when(redis.getExpire(anyString())).thenReturn(0L);
+        when(redis.expire(anyString(), any(Duration.class))).thenReturn(true);
+        when(hotKey.ttlForPublic(anyInt(), anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(counterService.getCounts(eq("knowpost"), anyString(), anyList()))
+                .thenReturn(Map.of("like", 0L, "fav", 0L));
         detailCache.put(detailKey(postId), response(postId, "100", "public", Instant.now()));
 
         KnowPostDetailResponse result = service.getDetail(postId, null);
@@ -117,6 +116,9 @@ class KnowPostServiceImplTest {
     @Test
     void ownerOnlyDatabaseDetailDoesNotPopulateSharedCache() {
         long postId = 42L;
+        when(redis.opsForValue()).thenReturn(valueOperations);
+        when(counterService.getCounts(eq("knowpost"), anyString(), anyList()))
+                .thenReturn(Map.of("like", 0L, "fav", 0L));
         when(mapper.findDetailById(postId)).thenReturn(row(postId, 100L, "published", "private"));
 
         KnowPostDetailResponse result = service.getDetail(postId, 100L);
