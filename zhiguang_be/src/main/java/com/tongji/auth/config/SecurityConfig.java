@@ -67,8 +67,14 @@ public class SecurityConfig {
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
-                .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()));
+                .oauth2ResourceServer(oauth -> oauth.jwt(jwt ->
+                        jwt.jwtAuthenticationConverter(accessTokenJwtAuthenticationConverter())));
         return http.build();
+    }
+
+    @Bean
+    public AccessTokenJwtAuthenticationConverter accessTokenJwtAuthenticationConverter() {
+        return new AccessTokenJwtAuthenticationConverter();
     }
 
     /**
