@@ -28,6 +28,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -106,6 +107,15 @@ class KnowPostServiceImplTest {
         assertThat(response.favoriteCount()).isEqualTo(3L);
         assertThat(response.liked()).isFalse();
         assertThat(response.faved()).isFalse();
+    }
+
+    @Test
+    void confirmContentRejectsObjectKeyFromDifferentPost() {
+        assertThatThrownBy(() -> service.confirmContent(111L, POST_ID, "posts/99/content.md", "etag", 10L, "sha256"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("objectKey 非法");
+
+        verify(mapper, never()).updateContent(any());
     }
 
     private KnowPostDetailResponse cachedDetail(String visible, long authorId) {

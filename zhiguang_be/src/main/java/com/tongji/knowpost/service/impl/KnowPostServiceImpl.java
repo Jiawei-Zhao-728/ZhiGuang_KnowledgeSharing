@@ -106,6 +106,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256) {
+        validateContentObjectKey(id, objectKey);
+
         // 缓存双删
         invalidateCache(id);
 
@@ -218,6 +220,16 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 可见性变更必须同步搜索索引，避免非公开内容继续被检索。
+        try {
+            long outId = idGen.nextId();
+            String op = "public".equals(visible) ? "upsert" : "delete";
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", op, "id", id));
+            outboxMapper.insert(outId, "knowpost", id, "KnowPostVisibilityUpdated", payload);
+        } catch (Exception e) {
+            log.warn("Outbox event after visibility update failed, post {}: {}", id, e.getMessage());
+        }
+
         invalidateCache(id);
     }
 
@@ -274,6 +286,13 @@ public class KnowPostServiceImpl implements KnowPostService {
             case "public", "followers", "school", "private", "unlisted" -> true;
             default -> false;
         };
+    }
+
+    private void validateContentObjectKey(long id, String objectKey) {
+        String expectedPrefix = "posts/" + id + "/content.";
+        if (objectKey == null || !objectKey.startsWith(expectedPrefix) || objectKey.contains("..")) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "objectKey 非法");
+        }
     }
 
     private String toJsonOrNull(List<String> list) {
