@@ -106,6 +106,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256) {
+        validateContentObjectKey(id, objectKey);
+
         // 缓存双删
         invalidateCache(id);
 
@@ -238,6 +240,16 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 可见性变更必须同步搜索索引，避免非公开内容继续被检索。
+        try {
+            long outId = idGen.nextId();
+            String op = "public".equals(visible) ? "upsert" : "delete";
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", op, "id", id));
+            outboxMapper.insert(outId, "knowpost", id, "KnowPostVisibilityUpdated", payload);
+        } catch (Exception e) {
+            log.warn("Outbox event after visibility update failed, post {}: {}", id, e.getMessage());
+        }
+
         invalidateCache(id);
     }
 
@@ -274,6 +286,13 @@ public class KnowPostServiceImpl implements KnowPostService {
             case "public", "followers", "school", "private", "unlisted" -> true;
             default -> false;
         };
+    }
+
+    private void validateContentObjectKey(long id, String objectKey) {
+        String expectedPrefix = "posts/" + id + "/content.";
+        if (objectKey == null || !objectKey.startsWith(expectedPrefix) || objectKey.contains("..")) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "objectKey 非法");
+        }
     }
 
     private String toJsonOrNull(List<String> list) {
@@ -324,9 +343,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source=local key={}", pageKey);
-            return enrichDetailResponse(local, currentUserIdNullable, true);
+            return processCachedDetail(local, id, pageKey, currentUserIdNullable, "local");
         }
 
         String cached = redis.opsForValue().get(pageKey);
@@ -458,19 +475,39 @@ public class KnowPostServiceImpl implements KnowPostService {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
 
-            // L1 填充
-            knowPostDetailCache.put(pageKey, base);
-            
-            // 4. 记录热度并尝试续期
-            // 如果该内容正在被高频访问，自动延长其缓存 TTL
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source={} key={}", sourceLog, pageKey);
-            
-            // 5. 叠加实时数据（计数与用户状态）并返回
-            return enrichDetailResponse(base, uid, true);
+            return processCachedDetail(base, id, pageKey, uid, sourceLog);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
+        }
+    }
+
+    private KnowPostDetailResponse processCachedDetail(KnowPostDetailResponse base, long id, String pageKey, Long uid, String sourceLog) {
+        ensureCachedDetailAccessible(id, uid);
+
+        // L1 填充
+        knowPostDetailCache.put(pageKey, base);
+
+        // 记录热度并尝试续期。如果该内容正在被高频访问，自动延长其缓存 TTL。
+        recordHotKeyAndExtendTtl(id, pageKey);
+        log.info("detail source={} key={}", sourceLog, pageKey);
+
+        // 叠加实时数据（计数与用户状态）并返回
+        return enrichDetailResponse(base, uid, true);
+    }
+
+    private void ensureCachedDetailAccessible(long id, Long uid) {
+        KnowPostDetailRow row = mapper.findDetailById(id);
+        if (row == null || "deleted".equals(row.getStatus())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
+        }
+
+        boolean isPublic = "published".equals(row.getStatus()) && "public".equals(row.getVisible());
+        boolean isOwner = uid != null && row.getCreatorId() != null && uid.equals(row.getCreatorId());
+        if (!isPublic && !isOwner) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
         }
     }
 
