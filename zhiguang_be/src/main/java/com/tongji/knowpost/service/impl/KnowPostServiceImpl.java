@@ -106,6 +106,10 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256) {
+        if (!isValidContentObjectKey(id, objectKey)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "objectKey 与知文不匹配");
+        }
+
         // 缓存双删
         invalidateCache(id);
 
@@ -184,6 +188,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
+        invalidateCache(id);
         try {
             userCounterService.incrementPosts(creatorId, 1);
         } catch (Exception ignored) {}
@@ -276,6 +281,15 @@ public class KnowPostServiceImpl implements KnowPostService {
         };
     }
 
+    private boolean isValidContentObjectKey(long id, String objectKey) {
+        if (objectKey == null || objectKey.isBlank() || objectKey.contains("..")) {
+            return false;
+        }
+
+        String prefix = "posts/" + id + "/content.";
+        return objectKey.startsWith(prefix) && objectKey.indexOf('/', prefix.length()) == -1;
+    }
+
     private String toJsonOrNull(List<String> list) {
         if (list == null) {
             return null;
@@ -324,6 +338,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            ensureCachedDetailCanBeServed(id, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -372,9 +387,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             // 7. 权限校验
             // 公开策略：状态为 published 且可见性为 public 的内容可直接访问
             // 私有策略：否则仅作者本人可见
-            boolean isPublic = "published".equals(row.getStatus()) && "public".equals(row.getVisible());
-            boolean isOwner = currentUserIdNullable != null && row.getCreatorId() != null && currentUserIdNullable.equals(row.getCreatorId());
-            if (!isPublic && !isOwner) {
+            boolean isPublic = isPublishedPublic(row);
+            if (!canView(row, currentUserIdNullable)) {
                 singleFlight.remove(pageKey);
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
             }
@@ -410,21 +424,23 @@ public class KnowPostServiceImpl implements KnowPostService {
                     row.getPublishTime()
             );
 
-            // 9. 写入 Redis 缓存
-            try {
-                String json = objectMapper.writeValueAsString(resp);
-                int baseTtl = 60;
-                // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
-                int jitter = ThreadLocalRandom.current().nextInt(30);
-                // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
-                int target = hotKey.ttlForPublic(baseTtl, pageKey);
-                redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
+            // 9. 仅缓存公开已发布内容，避免把作者专属视图写入共享缓存。
+            if (isPublic) {
+                try {
+                    String json = objectMapper.writeValueAsString(resp);
+                    int baseTtl = 60;
+                    // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
+                    int jitter = ThreadLocalRandom.current().nextInt(30);
+                    // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                    int target = hotKey.ttlForPublic(baseTtl, pageKey);
+                    redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
-                // L1 填充
-                knowPostDetailCache.put(pageKey, resp);
+                    // L1 填充
+                    knowPostDetailCache.put(pageKey, resp);
 
-                log.info("detail source=db key={}", pageKey);
-            } catch (Exception ignored) {}
+                    log.info("detail source=db key={}", pageKey);
+                } catch (Exception ignored) {}
+            }
 
             // 10. 释放锁并返回最终结果
             // 返回前调用 enrich 填充用户维度的 liked/faved 状态
@@ -454,24 +470,48 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
         }
         
+        KnowPostDetailResponse base;
         try {
             // 3. 反序列化缓存数据
-            KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
-
-            // L1 填充
-            knowPostDetailCache.put(pageKey, base);
-            
-            // 4. 记录热度并尝试续期
-            // 如果该内容正在被高频访问，自动延长其缓存 TTL
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source={} key={}", sourceLog, pageKey);
-            
-            // 5. 叠加实时数据（计数与用户状态）并返回
-            return enrichDetailResponse(base, uid, true);
+            base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
         }
+
+        ensureCachedDetailCanBeServed(id, uid);
+
+        // L1 填充
+        knowPostDetailCache.put(pageKey, base);
+
+        // 4. 记录热度并尝试续期
+        // 如果该内容正在被高频访问，自动延长其缓存 TTL
+        recordHotKeyAndExtendTtl(id, pageKey);
+        log.info("detail source={} key={}", sourceLog, pageKey);
+
+        // 5. 叠加实时数据（计数与用户状态）并返回
+        return enrichDetailResponse(base, uid, true);
+    }
+
+    private void ensureCachedDetailCanBeServed(long id, Long uid) {
+        KnowPostDetailRow row = mapper.findDetailById(id);
+        if (row == null || "deleted".equals(row.getStatus())) {
+            invalidateCache(id);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
+        }
+        if (!canView(row, uid)) {
+            invalidateCache(id);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+        }
+    }
+
+    private boolean canView(KnowPostDetailRow row, Long uid) {
+        boolean isOwner = uid != null && row.getCreatorId() != null && uid.equals(row.getCreatorId());
+        return isPublishedPublic(row) || isOwner;
+    }
+
+    private boolean isPublishedPublic(KnowPostDetailRow row) {
+        return "published".equals(row.getStatus()) && "public".equals(row.getVisible());
     }
 
     /**
