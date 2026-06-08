@@ -31,6 +31,7 @@ import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -106,6 +107,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256) {
+        validateContentObjectKey(id, objectKey);
+
         // 缓存双删
         invalidateCache(id);
 
@@ -239,6 +242,19 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         invalidateCache(id);
+
+        if (!"public".equals(visible)) {
+            ragIndexService.purgePostChunks(id);
+        }
+
+        // 可见性变更后刷新搜索索引；索引服务会删除非公开内容。
+        try {
+            long outId = idGen.nextId();
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
+            outboxMapper.insert(outId, "knowpost", id, "KnowPostVisibilityUpdated", payload);
+        } catch (Exception e) {
+            log.warn("Outbox event after visibility update failed, post {}: {}", id, e.getMessage());
+        }
     }
 
     /**
@@ -262,7 +278,21 @@ public class KnowPostServiceImpl implements KnowPostService {
             log.warn("Outbox event after delete failed, post {}: {}", id, e.getMessage());
         }
 
+        ragIndexService.purgePostChunks(id);
+
         invalidateCache(id);
+    }
+
+    private void validateContentObjectKey(long id, String objectKey) {
+        String expectedPrefix = "posts/" + id + "/content.";
+        if (objectKey == null || !objectKey.startsWith(expectedPrefix)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "objectKey 与知文不匹配");
+        }
+
+        String extension = objectKey.substring(expectedPrefix.length());
+        if (extension.isBlank() || extension.contains("/") || extension.contains("\\")) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "objectKey 与知文不匹配");
+        }
     }
 
     private boolean isValidVisible(String visible) {
@@ -324,6 +354,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            ensureCachedDetailAccessible(local, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -410,21 +441,25 @@ public class KnowPostServiceImpl implements KnowPostService {
                     row.getPublishTime()
             );
 
-            // 9. 写入 Redis 缓存
-            try {
-                String json = objectMapper.writeValueAsString(resp);
-                int baseTtl = 60;
-                // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
-                int jitter = ThreadLocalRandom.current().nextInt(30);
-                // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
-                int target = hotKey.ttlForPublic(baseTtl, pageKey);
-                redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
+            // 9. 仅缓存公开已发布内容；草稿/私密内容不能进入共享缓存。
+            if (isPublic) {
+                try {
+                    String json = objectMapper.writeValueAsString(resp);
+                    int baseTtl = 60;
+                    // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
+                    int jitter = ThreadLocalRandom.current().nextInt(30);
+                    // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                    int target = hotKey.ttlForPublic(baseTtl, pageKey);
+                    redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
-                // L1 填充
-                knowPostDetailCache.put(pageKey, resp);
+                    // L1 填充
+                    knowPostDetailCache.put(pageKey, resp);
 
-                log.info("detail source=db key={}", pageKey);
-            } catch (Exception ignored) {}
+                    log.info("detail source=db key={}", pageKey);
+                } catch (Exception ignored) {}
+            } else {
+                log.info("detail source=db-private key={}", pageKey);
+            }
 
             // 10. 释放锁并返回最终结果
             // 返回前调用 enrich 填充用户维度的 liked/faved 状态
@@ -457,6 +492,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         try {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            ensureCachedDetailAccessible(base, uid);
 
             // L1 填充
             knowPostDetailCache.put(pageKey, base);
@@ -468,10 +504,26 @@ public class KnowPostServiceImpl implements KnowPostService {
             
             // 5. 叠加实时数据（计数与用户状态）并返回
             return enrichDetailResponse(base, uid, true);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
         }
+    }
+
+    private void ensureCachedDetailAccessible(KnowPostDetailResponse base, Long uid) {
+        if (isCachedPublicPublished(base)) {
+            return;
+        }
+        if (uid != null && Objects.equals(base.authorId(), String.valueOf(uid))) {
+            return;
+        }
+        throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+    }
+
+    private boolean isCachedPublicPublished(KnowPostDetailResponse base) {
+        return "public".equals(base.visible()) && base.publishTime() != null;
     }
 
     /**
@@ -543,14 +595,14 @@ public class KnowPostServiceImpl implements KnowPostService {
         
         // 1. 延长详情页缓存
         Long detailTtl = redis.getExpire(detailPageKey);
-        if (detailTtl < target) {
+        if (detailTtl == null || detailTtl < target) {
             redis.expire(detailPageKey, java.time.Duration.ofSeconds(target));
         }
         
         // 2. 延长 Feed 流内容片段缓存
         String itemKey = "feed:item:" + id;
         Long itemTtl = redis.getExpire(itemKey);
-        if (itemTtl < target) {
+        if (itemTtl == null || itemTtl < target) {
             redis.expire(itemKey, java.time.Duration.ofSeconds(target));
         }
     }

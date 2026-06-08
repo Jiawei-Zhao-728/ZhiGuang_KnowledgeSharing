@@ -71,6 +71,8 @@ public class SearchServiceImpl implements SearchService {
                                             .fields("title^3", "body")));
                                     bq.filter(f -> f.term(t -> t.field("status")
                                             .value(v -> v.stringValue("published"))));
+                                    bq.filter(f -> f.term(t -> t.field("visible")
+                                            .value(v -> v.stringValue("public"))));
 
                                     if (tags != null && !tags.isEmpty()) {
                                         bq.filter(f -> f.terms(t -> t.field("tags")
