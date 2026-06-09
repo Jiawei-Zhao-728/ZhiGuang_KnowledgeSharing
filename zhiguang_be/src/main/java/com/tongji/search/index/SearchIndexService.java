@@ -83,6 +83,11 @@ public class SearchIndexService {
                 log.warn("Index upsert skipped: post {} not found", id);
                 return;
             }
+            if (!"published".equals(row.getStatus()) || !"public".equals(row.getVisible())) {
+                log.warn("Index upsert skipped: post {} is not public/published", id);
+                softDeleteKnowPost(id);
+                return;
+            }
             Map<String, Object> doc = new HashMap<>();
             doc.put("content_id", row.getId());
             doc.put("content_type", row.getType());
@@ -96,6 +101,7 @@ public class SearchIndexService {
                 doc.put("publish_time", row.getPublishTime().toEpochMilli());
             }
             doc.put("status", row.getStatus());
+            doc.put("visible", row.getVisible());
             doc.put("tags", parseStringArray(row.getTags()));
             doc.put("img_urls", parseStringArray(row.getImgUrls()));
             if (row.getIsTop() != null) {
