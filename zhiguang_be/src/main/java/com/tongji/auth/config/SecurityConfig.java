@@ -1,5 +1,6 @@
 package com.tongji.auth.config;
 
+import com.tongji.auth.token.AccessTokenJwtAuthenticationConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
@@ -44,7 +45,10 @@ public class SecurityConfig {
      * @throws Exception 构建过滤链过程中可能抛出的异常。
      */
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            AccessTokenJwtAuthenticationConverter accessTokenJwtAuthenticationConverter
+    ) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
@@ -67,7 +71,7 @@ public class SecurityConfig {
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
-                .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()));
+                .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(accessTokenJwtAuthenticationConverter)));
         return http.build();
     }
 
