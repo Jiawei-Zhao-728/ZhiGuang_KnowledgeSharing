@@ -21,7 +21,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest
+@WebMvcTest(controllers = SecurityConfigTest.ProtectedController.class)
 @Import({SecurityConfig.class, AccessTokenJwtAuthenticationConverter.class, SecurityConfigTest.ProtectedController.class})
 class SecurityConfigTest {
 
