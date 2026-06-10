@@ -21,8 +21,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(controllers = SecurityConfigTest.ProtectedController.class)
-@Import({SecurityConfig.class, AccessTokenJwtAuthenticationConverter.class})
+@WebMvcTest
+@Import({SecurityConfig.class, AccessTokenJwtAuthenticationConverter.class, SecurityConfigTest.ProtectedController.class})
 class SecurityConfigTest {
 
     @Autowired
@@ -65,7 +65,7 @@ class SecurityConfigTest {
     }
 
     @RestController
-    static class ProtectedController {
+    public static class ProtectedController {
 
         @GetMapping("/secure")
         String secure() {
