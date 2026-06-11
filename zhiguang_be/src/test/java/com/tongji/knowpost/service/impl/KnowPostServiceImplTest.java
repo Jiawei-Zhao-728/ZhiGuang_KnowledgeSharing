@@ -68,7 +68,7 @@ class KnowPostServiceImplTest {
         service = new KnowPostServiceImpl(
                 mapper,
                 idGenerator,
-                new ObjectMapper(),
+                new ObjectMapper().findAndRegisterModules(),
                 new OssProperties(),
                 counterService,
                 userCounterService,
