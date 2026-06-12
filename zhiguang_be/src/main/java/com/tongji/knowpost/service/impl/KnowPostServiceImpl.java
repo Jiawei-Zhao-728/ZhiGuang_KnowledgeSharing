@@ -179,6 +179,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void publish(long creatorId, long id) {
+        invalidateCache(id);
+
         int updated = mapper.publish(id, creatorId);
 
         if (updated == 0) {
@@ -203,6 +205,8 @@ public class KnowPostServiceImpl implements KnowPostService {
         } catch (Exception e) {
             log.warn("Pre-index after publish failed, post {}: {}", id, e.getMessage());
         }
+
+        invalidateCache(id);
     }
 
     /**
@@ -324,6 +328,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            ensureCachedDetailAccessible(local, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -457,6 +462,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         try {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            ensureCachedDetailAccessible(base, uid);
 
             // L1 填充
             knowPostDetailCache.put(pageKey, base);
@@ -468,9 +474,20 @@ public class KnowPostServiceImpl implements KnowPostService {
             
             // 5. 叠加实时数据（计数与用户状态）并返回
             return enrichDetailResponse(base, uid, true);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
+        }
+    }
+
+    private void ensureCachedDetailAccessible(KnowPostDetailResponse base, Long uid) {
+        String currentUserId = uid == null ? null : String.valueOf(uid);
+        boolean isOwner = currentUserId != null && currentUserId.equals(base.authorId());
+        boolean isPublicPublished = "public".equals(base.visible()) && base.publishTime() != null;
+        if (!isPublicPublished && !isOwner) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
         }
     }
 
