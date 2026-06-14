@@ -5,10 +5,15 @@ import com.tongji.auth.config.AuthProperties;
 import com.tongji.user.domain.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
+
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -19,11 +24,12 @@ class JwtServiceTest {
     private JwtDecoder accessTokenDecoder;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
+        KeyPair keyPair = generateRsaKeyPair();
         AuthProperties properties = new AuthProperties();
         properties.getJwt().setIssuer("test-issuer");
-        properties.getJwt().setPrivateKey(new ClassPathResource("keys/private.pem"));
-        properties.getJwt().setPublicKey(new ClassPathResource("keys/public.pem"));
+        properties.getJwt().setPrivateKey(pemResource("PRIVATE KEY", keyPair.getPrivate().getEncoded()));
+        properties.getJwt().setPublicKey(pemResource("PUBLIC KEY", keyPair.getPublic().getEncoded()));
         AuthConfiguration configuration = new AuthConfiguration(properties);
         JwtEncoder encoder = configuration.jwtEncoder();
         JwtDecoder decoder = configuration.tokenJwtDecoder();
@@ -71,5 +77,20 @@ class JwtServiceTest {
 
         Jwt refreshJwt = jwtService.decode(tokenPair.refreshToken());
         assertThat(jwtService.extractTokenType(refreshJwt)).isEqualTo("refresh");
+    }
+
+    private KeyPair generateRsaKeyPair() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        return generator.generateKeyPair();
+    }
+
+    private ByteArrayResource pemResource(String type, byte[] derBytes) {
+        String encoded = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8))
+                .encodeToString(derBytes);
+        String pem = "-----BEGIN " + type + "-----\n"
+                + encoded
+                + "\n-----END " + type + "-----\n";
+        return new ByteArrayResource(pem.getBytes(StandardCharsets.UTF_8));
     }
 }
