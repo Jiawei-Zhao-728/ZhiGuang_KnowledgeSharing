@@ -43,6 +43,10 @@ public class RagIndexService {
         reindexSinglePost(postId);
     }
 
+    public void deletePostChunks(long postId) {
+        deleteExistingChunks(postId);
+    }
+
     public int reindexSinglePost(long postId) {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {

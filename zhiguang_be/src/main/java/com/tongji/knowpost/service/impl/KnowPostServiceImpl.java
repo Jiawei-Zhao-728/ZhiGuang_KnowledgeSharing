@@ -162,13 +162,9 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
-        // 元数据变更后写入 Outbox 事件，驱动搜索索引更新
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostMetadataUpdated", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after metadata update failed, post {}: {}", id, e.getMessage());
+        enqueueKnowPostIndexUpsert(id, "KnowPostMetadataUpdated");
+        if (visible != null) {
+            syncRagForVisibility(id, visible);
         }
 
         invalidateCache(id);
@@ -218,6 +214,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        enqueueKnowPostIndexUpsert(id, "KnowPostVisibilityUpdated");
+        syncRagForVisibility(id, visible);
         invalidateCache(id);
     }
 
@@ -274,6 +272,28 @@ public class KnowPostServiceImpl implements KnowPostService {
             case "public", "followers", "school", "private", "unlisted" -> true;
             default -> false;
         };
+    }
+
+    private void enqueueKnowPostIndexUpsert(long id, String eventType) {
+        try {
+            long outId = idGen.nextId();
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
+            outboxMapper.insert(outId, "knowpost", id, eventType, payload);
+        } catch (Exception e) {
+            log.warn("Outbox event {} failed, post {}: {}", eventType, id, e.getMessage());
+        }
+    }
+
+    private void syncRagForVisibility(long id, String visible) {
+        try {
+            if ("public".equals(visible)) {
+                ragIndexService.ensureIndexed(id);
+            } else {
+                ragIndexService.deletePostChunks(id);
+            }
+        } catch (Exception e) {
+            log.warn("RAG visibility sync failed, post {}: {}", id, e.getMessage());
+        }
     }
 
     private String toJsonOrNull(List<String> list) {
