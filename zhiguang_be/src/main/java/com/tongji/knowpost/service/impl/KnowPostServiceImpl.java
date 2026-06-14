@@ -214,8 +214,6 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
-        enqueueKnowPostIndexUpsert(id, "KnowPostVisibilityUpdated");
-        syncRagForVisibility(id, visible);
         invalidateCache(id);
     }
 
@@ -236,6 +234,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        enqueueKnowPostIndexUpsert(id, "KnowPostVisibilityUpdated");
+        syncRagForVisibility(id, visible);
         invalidateCache(id);
     }
 
