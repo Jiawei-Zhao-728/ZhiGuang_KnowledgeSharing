@@ -1,8 +1,8 @@
 package com.tongji.auth.token;
 
-import lombok.RequiredArgsConstructor;
 import com.tongji.auth.config.AuthProperties;
 import com.tongji.user.domain.User;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -25,7 +25,6 @@ import java.util.UUID;
  * 过期时间：来自 `AuthProperties.jwt.accessTokenTtl` 与 `refreshTokenTtl`。
  */
 @Service
-@RequiredArgsConstructor
 public class JwtService {
 
     private static final String CLAIM_TOKEN_TYPE = "token_type";
@@ -35,6 +34,14 @@ public class JwtService {
     private final JwtDecoder jwtDecoder;
     private final AuthProperties properties;
     private final Clock clock = Clock.systemUTC();
+
+    public JwtService(JwtEncoder jwtEncoder,
+                      @Qualifier("tokenJwtDecoder") JwtDecoder jwtDecoder,
+                      AuthProperties properties) {
+        this.jwtEncoder = jwtEncoder;
+        this.jwtDecoder = jwtDecoder;
+        this.properties = properties;
+    }
 
     /**
      * 为指定用户签发一对 Access/Refresh Token。
