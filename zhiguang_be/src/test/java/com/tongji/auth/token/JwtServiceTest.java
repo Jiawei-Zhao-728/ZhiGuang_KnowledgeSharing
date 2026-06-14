@@ -11,10 +11,12 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JwtServiceTest {
 
     private JwtService jwtService;
+    private JwtDecoder accessTokenDecoder;
 
     @BeforeEach
     void setUp() {
@@ -24,7 +26,8 @@ class JwtServiceTest {
         properties.getJwt().setPublicKey(new ClassPathResource("keys/public.pem"));
         AuthConfiguration configuration = new AuthConfiguration(properties);
         JwtEncoder encoder = configuration.jwtEncoder();
-        JwtDecoder decoder = configuration.jwtDecoder();
+        JwtDecoder decoder = configuration.tokenJwtDecoder();
+        accessTokenDecoder = configuration.jwtDecoder();
         jwtService = new JwtService(encoder, decoder, properties);
     }
 
@@ -49,5 +52,24 @@ class JwtServiceTest {
         assertThat(jwtService.extractTokenType(refreshJwt)).isEqualTo("refresh");
         assertThat(jwtService.extractUserId(refreshJwt)).isEqualTo(123L);
         assertThat(jwtService.extractTokenId(refreshJwt)).isEqualTo(tokenPair.refreshTokenId());
+    }
+
+    @Test
+    void accessTokenDecoderRejectsRefreshToken() {
+        User user = User.builder()
+                .id(123L)
+                .nickname("tester")
+                .build();
+
+        TokenPair tokenPair = jwtService.issueTokenPair(user);
+
+        Jwt accessJwt = accessTokenDecoder.decode(tokenPair.accessToken());
+        assertThat(jwtService.extractTokenType(accessJwt)).isEqualTo("access");
+
+        assertThatThrownBy(() -> accessTokenDecoder.decode(tokenPair.refreshToken()))
+                .hasMessageContaining("Bearer token must be an access token");
+
+        Jwt refreshJwt = jwtService.decode(tokenPair.refreshToken());
+        assertThat(jwtService.extractTokenType(refreshJwt)).isEqualTo("refresh");
     }
 }

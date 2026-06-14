@@ -9,12 +9,19 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
@@ -64,16 +71,52 @@ public class AuthConfiguration {
     }
 
     /**
-     * 创建 JWT 解码器。
+     * 创建供 Spring Security Resource Server 使用的 Access Token 解码器。
      *
-     * <p>读取 RSA 公钥并构造基于 Nimbus 的 {@link JwtDecoder}。</p>
+     * <p>读取 RSA 公钥并构造基于 Nimbus 的 {@link JwtDecoder}，额外要求
+     * `token_type=access`，避免 Refresh Token 被当作 Bearer 凭证访问受保护 API。</p>
      *
-     * @return 基于 RSA 公钥的 {@link JwtDecoder}。
+     * @return 只接受 Access Token 的 {@link JwtDecoder}。
      */
     @Bean
+    @Primary
     public JwtDecoder jwtDecoder() {
+        NimbusJwtDecoder decoder = buildJwtDecoder();
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefault(),
+                accessTokenValidator()
+        ));
+        return decoder;
+    }
+
+    /**
+     * 创建通用 JWT 解码器，供业务层解析 Refresh Token 使用。
+     *
+     * @return 不限制 `token_type` 的 {@link JwtDecoder}。
+     */
+    @Bean
+    public JwtDecoder tokenJwtDecoder() {
+        return buildJwtDecoder();
+    }
+
+    private NimbusJwtDecoder buildJwtDecoder() {
         AuthProperties.Jwt jwtProps = properties.getJwt();
         RSAPublicKey publicKey = PemUtils.readPublicKey(jwtProps.getPublicKey());
         return NimbusJwtDecoder.withPublicKey(publicKey).build();
+    }
+
+    private OAuth2TokenValidator<Jwt> accessTokenValidator() {
+        return jwt -> {
+            Object tokenType = jwt.getClaims().get("token_type");
+            if ("access".equals(tokenType)) {
+                return OAuth2TokenValidatorResult.success();
+            }
+            OAuth2Error error = new OAuth2Error(
+                    "invalid_token",
+                    "Bearer token must be an access token",
+                    null
+            );
+            return OAuth2TokenValidatorResult.failure(error);
+        };
     }
 }
