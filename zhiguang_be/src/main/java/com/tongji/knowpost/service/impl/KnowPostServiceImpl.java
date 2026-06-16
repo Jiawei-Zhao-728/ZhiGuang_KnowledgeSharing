@@ -324,6 +324,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            assertCanViewCachedDetail(local, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -454,23 +455,34 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
         }
         
+        KnowPostDetailResponse base;
         try {
             // 3. 反序列化缓存数据
-            KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
-
-            // L1 填充
-            knowPostDetailCache.put(pageKey, base);
-            
-            // 4. 记录热度并尝试续期
-            // 如果该内容正在被高频访问，自动延长其缓存 TTL
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source={} key={}", sourceLog, pageKey);
-            
-            // 5. 叠加实时数据（计数与用户状态）并返回
-            return enrichDetailResponse(base, uid, true);
+            base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
+        }
+
+        assertCanViewCachedDetail(base, uid);
+
+        // L1 填充
+        knowPostDetailCache.put(pageKey, base);
+
+        // 4. 记录热度并尝试续期
+        // 如果该内容正在被高频访问，自动延长其缓存 TTL
+        recordHotKeyAndExtendTtl(id, pageKey);
+        log.info("detail source={} key={}", sourceLog, pageKey);
+
+        // 5. 叠加实时数据（计数与用户状态）并返回
+        return enrichDetailResponse(base, uid, true);
+    }
+
+    private void assertCanViewCachedDetail(KnowPostDetailResponse cached, Long uid) {
+        boolean isPublic = "public".equals(cached.visible()) && cached.publishTime() != null;
+        boolean isOwner = uid != null && cached.authorId() != null && cached.authorId().equals(String.valueOf(uid));
+        if (!isPublic && !isOwner) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
         }
     }
 
