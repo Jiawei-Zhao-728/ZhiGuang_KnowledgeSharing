@@ -53,7 +53,7 @@ public class SearchIndexService {
     public void ensureBackfill() {
         try {
             long cnt = es.count(c -> c.index(INDEX)).count();
-            if (cnt > 0) return;
+            if (cnt > 0 && !hasDocumentsMissingVisible()) return;
             int limit = 500;
             int offset = 0;
             while (true) {
@@ -73,6 +73,16 @@ public class SearchIndexService {
         }
     }
 
+    private boolean hasDocumentsMissingVisible() {
+        try {
+            return es.count(c -> c.index(INDEX)
+                    .query(q -> q.bool(b -> b.mustNot(mn -> mn.exists(e -> e.field("visible")))))).count() > 0;
+        } catch (Exception e) {
+            log.warn("Search index visibility repair check skipped: {}", e.getMessage());
+            return false;
+        }
+    }
+
     /**
      * upsert 内容文档：写入基础字段、计数与补全。使用 wait_for 刷新以保障“立即可搜”。
      */
@@ -81,6 +91,12 @@ public class SearchIndexService {
             KnowPostDetailRow row = knowPostMapper.findDetailById(id);
             if (row == null) {
                 log.warn("Index upsert skipped: post {} not found", id);
+                softDeleteKnowPost(id);
+                return;
+            }
+            if (!"published".equals(row.getStatus()) || !"public".equals(row.getVisible())) {
+                log.info("Index upsert replaced with soft delete for non-public post {}", id);
+                softDeleteKnowPost(id);
                 return;
             }
             Map<String, Object> doc = new HashMap<>();
@@ -96,6 +112,7 @@ public class SearchIndexService {
                 doc.put("publish_time", row.getPublishTime().toEpochMilli());
             }
             doc.put("status", row.getStatus());
+            doc.put("visible", row.getVisible());
             doc.put("tags", parseStringArray(row.getTags()));
             doc.put("img_urls", parseStringArray(row.getImgUrls()));
             if (row.getIsTop() != null) {

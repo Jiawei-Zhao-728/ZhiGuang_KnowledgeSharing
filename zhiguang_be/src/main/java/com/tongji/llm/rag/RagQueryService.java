@@ -1,5 +1,9 @@
 package com.tongji.llm.rag;
 
+import com.tongji.common.exception.BusinessException;
+import com.tongji.common.exception.ErrorCode;
+import com.tongji.knowpost.mapper.KnowPostMapper;
+import com.tongji.knowpost.model.KnowPostDetailRow;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
@@ -26,11 +30,22 @@ public class RagQueryService {
     private final ChatClient chatClient;
     // 索引服务：确保帖子在问答前已建立/更新索引
     private final RagIndexService indexService;
+    private final KnowPostMapper knowPostMapper;
 
     /**
      * 使用 WebFlux 返回回答内容的流。
      */
     public Flux<String> streamAnswerFlux(long postId, String question, int topK, int maxTokens) {
+        KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+        if (row == null || "deleted".equals(row.getStatus())) {
+            indexService.purgePostIndex(postId);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
+        }
+        if (!"published".equals(row.getStatus()) || !"public".equals(row.getVisible())) {
+            indexService.purgePostIndex(postId);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+        }
+
         // 轻量保障：如索引不存在或指纹未变更则跳过，否则重建
         indexService.ensureIndexed(postId);
 

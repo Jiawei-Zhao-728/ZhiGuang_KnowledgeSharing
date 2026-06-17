@@ -163,12 +163,14 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         // 元数据变更后写入 Outbox 事件，驱动搜索索引更新
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostMetadataUpdated", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after metadata update failed, post {}: {}", id, e.getMessage());
+        enqueueKnowPostIndexEvent(id, "KnowPostMetadataUpdated", "upsert");
+
+        if (visible != null) {
+            try {
+                ragIndexService.ensureIndexed(id);
+            } catch (Exception e) {
+                log.warn("RAG index refresh after metadata update failed, post {}: {}", id, e.getMessage());
+            }
         }
 
         invalidateCache(id);
@@ -179,6 +181,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void publish(long creatorId, long id) {
+        invalidateCache(id);
+
         int updated = mapper.publish(id, creatorId);
 
         if (updated == 0) {
@@ -189,13 +193,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         } catch (Exception ignored) {}
 
         // 写入 Outbox 事件，驱动搜索索引增量更新
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostPublished", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after publish failed, post {}: {}", id, e.getMessage());
-        }
+        enqueueKnowPostIndexEvent(id, "KnowPostPublished", "upsert");
 
         // 发布成功后触发一次预索引，减少首次问答冷启动
         try {
@@ -203,6 +201,8 @@ public class KnowPostServiceImpl implements KnowPostService {
         } catch (Exception e) {
             log.warn("Pre-index after publish failed, post {}: {}", id, e.getMessage());
         }
+
+        invalidateCache(id);
     }
 
     /**
@@ -216,6 +216,14 @@ public class KnowPostServiceImpl implements KnowPostService {
 
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
+        }
+
+        enqueueKnowPostIndexEvent(id, "KnowPostVisibilityUpdated", "upsert");
+
+        try {
+            ragIndexService.ensureIndexed(id);
+        } catch (Exception e) {
+            log.warn("RAG index refresh after visibility update failed, post {}: {}", id, e.getMessage());
         }
 
         invalidateCache(id);
@@ -254,12 +262,12 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         // 写入 Outbox 事件，驱动搜索索引软删
+        enqueueKnowPostIndexEvent(id, "KnowPostDeleted", "delete");
+
         try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "delete", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostDeleted", payload);
+            ragIndexService.purgePostIndex(id);
         } catch (Exception e) {
-            log.warn("Outbox event after delete failed, post {}: {}", id, e.getMessage());
+            log.warn("RAG index purge after delete failed, post {}: {}", id, e.getMessage());
         }
 
         invalidateCache(id);
@@ -324,6 +332,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            validateCachedDetailAccess(id, local, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -372,7 +381,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             // 7. 权限校验
             // 公开策略：状态为 published 且可见性为 public 的内容可直接访问
             // 私有策略：否则仅作者本人可见
-            boolean isPublic = "published".equals(row.getStatus()) && "public".equals(row.getVisible());
+            boolean isPublic = isPubliclyViewable(row);
             boolean isOwner = currentUserIdNullable != null && row.getCreatorId() != null && currentUserIdNullable.equals(row.getCreatorId());
             if (!isPublic && !isOwner) {
                 singleFlight.remove(pageKey);
@@ -410,21 +419,23 @@ public class KnowPostServiceImpl implements KnowPostService {
                     row.getPublishTime()
             );
 
-            // 9. 写入 Redis 缓存
-            try {
-                String json = objectMapper.writeValueAsString(resp);
-                int baseTtl = 60;
-                // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
-                int jitter = ThreadLocalRandom.current().nextInt(30);
-                // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
-                int target = hotKey.ttlForPublic(baseTtl, pageKey);
-                redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
+            // 9. 仅公开已发布内容写入共享缓存；草稿/私密内容不能跨用户复用缓存。
+            if (isPublic) {
+                try {
+                    String json = objectMapper.writeValueAsString(resp);
+                    int baseTtl = 60;
+                    // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
+                    int jitter = ThreadLocalRandom.current().nextInt(30);
+                    // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                    int target = hotKey.ttlForPublic(baseTtl, pageKey);
+                    redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
-                // L1 填充
-                knowPostDetailCache.put(pageKey, resp);
+                    // L1 填充
+                    knowPostDetailCache.put(pageKey, resp);
+                } catch (Exception ignored) {}
+            }
 
-                log.info("detail source=db key={}", pageKey);
-            } catch (Exception ignored) {}
+            log.info("detail source=db key={}", pageKey);
 
             // 10. 释放锁并返回最终结果
             // 返回前调用 enrich 填充用户维度的 liked/faved 状态
@@ -457,6 +468,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         try {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            validateCachedDetailAccess(id, base, uid);
 
             // L1 填充
             knowPostDetailCache.put(pageKey, base);
@@ -468,6 +480,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             
             // 5. 叠加实时数据（计数与用户状态）并返回
             return enrichDetailResponse(base, uid, true);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
@@ -561,6 +575,42 @@ public class KnowPostServiceImpl implements KnowPostService {
         redis.delete(pageKey);
 
         knowPostDetailCache.invalidate(pageKey);
+    }
+
+    private void validateCachedDetailAccess(long id, KnowPostDetailResponse cached, Long uid) {
+        KnowPostDetailRow row = mapper.findDetailById(id);
+        if (row == null || "deleted".equals(row.getStatus())) {
+            invalidateCache(id);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
+        }
+
+        boolean isPublic = isPubliclyViewable(row);
+        boolean isOwner = uid != null && row.getCreatorId() != null && uid.equals(row.getCreatorId());
+        if (!isPublic) {
+            invalidateCache(id);
+        }
+        if (!isPublic && !isOwner) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+        }
+        if (cached.authorId() != null && row.getCreatorId() != null
+                && !cached.authorId().equals(String.valueOf(row.getCreatorId()))) {
+            invalidateCache(id);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
+        }
+    }
+
+    private boolean isPubliclyViewable(KnowPostDetailRow row) {
+        return "published".equals(row.getStatus()) && "public".equals(row.getVisible());
+    }
+
+    private void enqueueKnowPostIndexEvent(long id, String type, String op) {
+        try {
+            long outId = idGen.nextId();
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", op, "id", id));
+            outboxMapper.insert(outId, "knowpost", id, type, payload);
+        } catch (Exception e) {
+            log.warn("Outbox event {} failed, post {}: {}", type, id, e.getMessage());
+        }
     }
 
     private List<String> parseStringArray(String json) {
