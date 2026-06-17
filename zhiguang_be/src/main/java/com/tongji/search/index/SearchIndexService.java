@@ -53,7 +53,7 @@ public class SearchIndexService {
     public void ensureBackfill() {
         try {
             long cnt = es.count(c -> c.index(INDEX)).count();
-            if (cnt > 0) return;
+            if (cnt > 0 && !hasDocumentsMissingVisible()) return;
             int limit = 500;
             int offset = 0;
             while (true) {
@@ -70,6 +70,16 @@ public class SearchIndexService {
             log.info("Search index backfill completed: {} documents", es.count(c -> c.index(INDEX)).count());
         } catch (Exception e) {
             log.warn("Search index backfill skipped: {}", e.getMessage());
+        }
+    }
+
+    private boolean hasDocumentsMissingVisible() {
+        try {
+            return es.count(c -> c.index(INDEX)
+                    .query(q -> q.bool(b -> b.mustNot(mn -> mn.exists(e -> e.field("visible")))))).count() > 0;
+        } catch (Exception e) {
+            log.warn("Search index visibility repair check skipped: {}", e.getMessage());
+            return false;
         }
     }
 
