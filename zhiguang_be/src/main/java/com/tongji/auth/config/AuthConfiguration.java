@@ -5,13 +5,19 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import com.tongji.auth.token.AccessTokenTypeValidator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
@@ -71,7 +77,30 @@ public class AuthConfiguration {
      * @return 基于 RSA 公钥的 {@link JwtDecoder}。
      */
     @Bean
+    @Primary
     public JwtDecoder jwtDecoder() {
+        return buildJwtDecoder();
+    }
+
+    /**
+     * 创建仅接受 Access Token 的 JWT 解码器，供资源服务器鉴权使用。
+     *
+     * <p>Refresh Token 仍需由认证服务解码并校验白名单，但不能作为 API Bearer 凭证。</p>
+     *
+     * @return 只接受 token_type=access 的 {@link JwtDecoder}。
+     */
+    @Bean
+    public JwtDecoder accessTokenJwtDecoder() {
+        NimbusJwtDecoder decoder = buildJwtDecoder();
+        OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefault(),
+                new AccessTokenTypeValidator()
+        );
+        decoder.setJwtValidator(validator);
+        return decoder;
+    }
+
+    private NimbusJwtDecoder buildJwtDecoder() {
         AuthProperties.Jwt jwtProps = properties.getJwt();
         RSAPublicKey publicKey = PemUtils.readPublicKey(jwtProps.getPublicKey());
         return NimbusJwtDecoder.withPublicKey(publicKey).build();
