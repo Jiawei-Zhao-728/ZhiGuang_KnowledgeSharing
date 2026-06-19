@@ -171,6 +171,10 @@ public class KnowPostServiceImpl implements KnowPostService {
             log.warn("Outbox event after metadata update failed, post {}: {}", id, e.getMessage());
         }
 
+        if (visible != null && !"public".equals(visible)) {
+            ragIndexService.purgePost(id);
+        }
+
         invalidateCache(id);
     }
 
@@ -218,6 +222,10 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        if (!"public".equals(visible)) {
+            ragIndexService.purgePost(id);
+        }
+
         invalidateCache(id);
     }
 
@@ -262,6 +270,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             log.warn("Outbox event after delete failed, post {}: {}", id, e.getMessage());
         }
 
+        ragIndexService.purgePost(id);
         invalidateCache(id);
     }
 

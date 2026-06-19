@@ -136,6 +136,24 @@ class KnowPostServiceImplTest {
         verify(valueOperations).set(eq(DETAIL_CACHE_KEY), anyString(), any(Duration.class));
     }
 
+    @Test
+    void purgesRagChunksWhenVisibilityBecomesPrivate() {
+        when(mapper.updateVisibility(POST_ID, OWNER_ID, "private")).thenReturn(1);
+
+        service.updateVisibility(OWNER_ID, POST_ID, "private");
+
+        verify(ragIndexService).purgePost(POST_ID);
+    }
+
+    @Test
+    void purgesRagChunksWhenPostIsDeleted() {
+        when(mapper.softDelete(POST_ID, OWNER_ID)).thenReturn(1);
+
+        service.delete(OWNER_ID, POST_ID);
+
+        verify(ragIndexService).purgePost(POST_ID);
+    }
+
     private KnowPostDetailResponse detailResponse(String visible, Instant publishTime) {
         return new KnowPostDetailResponse(
                 String.valueOf(POST_ID),
