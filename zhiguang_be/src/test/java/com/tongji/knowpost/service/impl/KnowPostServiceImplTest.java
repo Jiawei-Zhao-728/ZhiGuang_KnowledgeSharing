@@ -23,7 +23,11 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class KnowPostServiceImplTest {
@@ -58,6 +62,24 @@ class KnowPostServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("无权限查看");
         verifyNoInteractions(counterService, redis, hotKey);
+    }
+
+    @Test
+    void visibilityChangeEmitsSearchOutboxRefresh() {
+        Cache<String, KnowPostDetailResponse> detailCache = Caffeine.newBuilder().build();
+        KnowPostServiceImpl service = newService(detailCache);
+        when(mapper.updateVisibility(42L, 7L, "private")).thenReturn(1);
+        when(idGen.nextId()).thenReturn(99L);
+
+        service.updateVisibility(7L, 42L, "private");
+
+        verify(outboxMapper).insert(
+                eq(99L),
+                eq("knowpost"),
+                eq(42L),
+                eq("KnowPostVisibilityUpdated"),
+                contains("\"op\":\"upsert\"")
+        );
     }
 
     private KnowPostServiceImpl newService(Cache<String, KnowPostDetailResponse> detailCache) {

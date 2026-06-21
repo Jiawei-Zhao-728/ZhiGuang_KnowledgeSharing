@@ -83,6 +83,11 @@ public class SearchIndexService {
                 log.warn("Index upsert skipped: post {} not found", id);
                 return;
             }
+            if (!"published".equals(row.getStatus()) || !"public".equals(row.getVisible())) {
+                log.info("Index upsert removed non-public post {} status={} visible={}", id, row.getStatus(), row.getVisible());
+                softDeleteKnowPost(id);
+                return;
+            }
             Map<String, Object> doc = new HashMap<>();
             doc.put("content_id", row.getId());
             doc.put("content_type", row.getType());
