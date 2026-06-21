@@ -45,9 +45,9 @@ class SearchIndexServiceTest {
         @SuppressWarnings("rawtypes")
         ArgumentCaptor<IndexRequest> requestCaptor = ArgumentCaptor.forClass(IndexRequest.class);
         verify(es).index(requestCaptor.capture());
-        assertThat((Map<?, ?>) requestCaptor.getValue().document())
-                .containsEntry("content_id", 42L)
-                .containsEntry("status", "deleted");
+        Map<?, ?> tombstone = (Map<?, ?>) requestCaptor.getValue().document();
+        assertThat(tombstone.get("content_id")).isEqualTo(42L);
+        assertThat(tombstone.get("status")).isEqualTo("deleted");
         verifyNoInteractions(counterService);
     }
 }
