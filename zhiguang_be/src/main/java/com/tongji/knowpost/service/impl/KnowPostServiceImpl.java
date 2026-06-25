@@ -222,11 +222,6 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
-        if (!"public".equals(visible)) {
-            deleteRagIndex(id);
-        }
-        emitSearchOutbox(id, "public".equals(visible) ? "upsert" : "delete", "KnowPostVisibilityUpdated");
-
         invalidateCache(id);
     }
 
@@ -246,6 +241,11 @@ public class KnowPostServiceImpl implements KnowPostService {
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
+
+        if (!"public".equals(visible)) {
+            deleteRagIndex(id);
+        }
+        emitSearchOutbox(id, "public".equals(visible) ? "upsert" : "delete", "KnowPostVisibilityUpdated");
 
         invalidateCache(id);
     }
