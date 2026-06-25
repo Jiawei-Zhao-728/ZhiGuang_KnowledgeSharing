@@ -1,9 +1,13 @@
 package com.tongji.knowpost.api;
 
+import com.tongji.auth.token.JwtService;
 import com.tongji.llm.rag.RagIndexService;
 import com.tongji.llm.rag.RagQueryService;
+import com.tongji.knowpost.service.KnowPostService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -16,6 +20,8 @@ public class KnowPostRagController {
 
     private final RagIndexService indexService;
     private final RagQueryService ragQueryService;
+    private final KnowPostService knowPostService;
+    private final JwtService jwtService;
 
     /**
      * 单篇知文 RAG 问答（WebFlux + Flux 流式输出）。
@@ -25,7 +31,10 @@ public class KnowPostRagController {
     public Flux<String> qaStream(@PathVariable("id") long id,
                                  @RequestParam("question") String question,
                                  @RequestParam(value = "topK", defaultValue = "5") int topK,
-                                 @RequestParam(value = "maxTokens", defaultValue = "1024") int maxTokens) {
+                                 @RequestParam(value = "maxTokens", defaultValue = "1024") int maxTokens,
+                                 @AuthenticationPrincipal Jwt jwt) {
+        Long userId = (jwt == null) ? null : jwtService.extractUserId(jwt);
+        knowPostService.getDetail(id, userId);
         return ragQueryService.streamAnswerFlux(id, question, topK, maxTokens);
     }
 

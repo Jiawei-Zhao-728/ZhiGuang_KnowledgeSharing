@@ -47,12 +47,14 @@ public class RagIndexService {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {
             log.warn("Post {} not found", postId);
+            deletePostIndex(postId);
             return 0;
         }
 
         // 仅索引公开的已发布知文
         if (!"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
             log.warn("Post {} is not public/published, skip indexing", postId);
+            deletePostIndex(postId);
             return 0;
         }
 
@@ -149,6 +151,10 @@ public class RagIndexService {
     /**
      * 删除旧切片：按 metadata.postId 精确删除，确保 upsert 幂等
      */
+    public void deletePostIndex(long postId) {
+        deleteExistingChunks(postId);
+    }
+
     private void deleteExistingChunks(long postId) {
         try {
             if (!StringUtils.hasText(esProps.getIndex())) return;
