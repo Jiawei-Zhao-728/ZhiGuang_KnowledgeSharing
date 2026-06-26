@@ -9,8 +9,10 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JwtServiceTest {
 
@@ -49,5 +51,27 @@ class JwtServiceTest {
         assertThat(jwtService.extractTokenType(refreshJwt)).isEqualTo("refresh");
         assertThat(jwtService.extractUserId(refreshJwt)).isEqualTo(123L);
         assertThat(jwtService.extractTokenId(refreshJwt)).isEqualTo(tokenPair.refreshTokenId());
+    }
+
+    @Test
+    void accessTokenDecoderRejectsRefreshTokens() {
+        AuthProperties properties = new AuthProperties();
+        properties.getJwt().setIssuer("test-issuer");
+        properties.getJwt().setPrivateKey(new ClassPathResource("keys/private.pem"));
+        properties.getJwt().setPublicKey(new ClassPathResource("keys/public.pem"));
+        AuthConfiguration configuration = new AuthConfiguration(properties);
+        JwtDecoder accessTokenDecoder = configuration.accessTokenJwtDecoder();
+
+        User user = User.builder()
+                .id(123L)
+                .nickname("tester")
+                .build();
+
+        TokenPair tokenPair = jwtService.issueTokenPair(user);
+
+        assertThat(accessTokenDecoder.decode(tokenPair.accessToken()).getClaimAsString("token_type")).isEqualTo("access");
+        assertThatThrownBy(() -> accessTokenDecoder.decode(tokenPair.refreshToken()))
+                .isInstanceOf(JwtException.class)
+                .hasMessageContaining("Only access tokens");
     }
 }
