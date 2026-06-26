@@ -5,11 +5,16 @@ import com.tongji.auth.config.AuthProperties;
 import com.tongji.user.domain.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtException;
+
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -17,14 +22,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class JwtServiceTest {
 
     private JwtService jwtService;
+    private AuthConfiguration configuration;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
+        KeyPair keyPair = generateRsaKeyPair();
         AuthProperties properties = new AuthProperties();
         properties.getJwt().setIssuer("test-issuer");
-        properties.getJwt().setPrivateKey(new ClassPathResource("keys/private.pem"));
-        properties.getJwt().setPublicKey(new ClassPathResource("keys/public.pem"));
-        AuthConfiguration configuration = new AuthConfiguration(properties);
+        properties.getJwt().setPrivateKey(new ByteArrayResource(toPem("PRIVATE KEY", keyPair.getPrivate().getEncoded())));
+        properties.getJwt().setPublicKey(new ByteArrayResource(toPem("PUBLIC KEY", keyPair.getPublic().getEncoded())));
+        configuration = new AuthConfiguration(properties);
         JwtEncoder encoder = configuration.jwtEncoder();
         JwtDecoder decoder = configuration.jwtDecoder();
         jwtService = new JwtService(encoder, decoder, properties);
@@ -55,11 +62,6 @@ class JwtServiceTest {
 
     @Test
     void accessTokenDecoderRejectsRefreshTokens() {
-        AuthProperties properties = new AuthProperties();
-        properties.getJwt().setIssuer("test-issuer");
-        properties.getJwt().setPrivateKey(new ClassPathResource("keys/private.pem"));
-        properties.getJwt().setPublicKey(new ClassPathResource("keys/public.pem"));
-        AuthConfiguration configuration = new AuthConfiguration(properties);
         JwtDecoder accessTokenDecoder = configuration.accessTokenJwtDecoder();
 
         User user = User.builder()
@@ -73,5 +75,17 @@ class JwtServiceTest {
         assertThatThrownBy(() -> accessTokenDecoder.decode(tokenPair.refreshToken()))
                 .isInstanceOf(JwtException.class)
                 .hasMessageContaining("Only access tokens");
+    }
+
+    private KeyPair generateRsaKeyPair() throws Exception {
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
+        keyPairGenerator.initialize(2048);
+        return keyPairGenerator.generateKeyPair();
+    }
+
+    private byte[] toPem(String label, byte[] encoded) {
+        String body = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(encoded);
+        return ("-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n")
+                .getBytes(StandardCharsets.UTF_8);
     }
 }
