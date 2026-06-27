@@ -106,6 +106,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256) {
+        validateContentObjectKey(id, objectKey);
+
         // 缓存双删
         invalidateCache(id);
 
@@ -132,6 +134,18 @@ public class KnowPostServiceImpl implements KnowPostService {
             ragIndexService.ensureIndexed(id);
         } catch (Exception e) {
             log.warn("Pre-index after content confirm failed, post {}: {}", id, e.getMessage());
+        }
+    }
+
+    private void validateContentObjectKey(long id, String objectKey) {
+        String expectedPrefix = "posts/" + id + "/content";
+        if (objectKey == null || !objectKey.startsWith(expectedPrefix)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "objectKey 非法");
+        }
+
+        String suffix = objectKey.substring(expectedPrefix.length());
+        if (!suffix.matches("\\.[A-Za-z0-9]{1,16}")) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "objectKey 非法");
         }
     }
 
@@ -324,6 +338,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
+            ensureCachedDetailVisible(local, currentUserIdNullable);
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
@@ -410,21 +425,23 @@ public class KnowPostServiceImpl implements KnowPostService {
                     row.getPublishTime()
             );
 
-            // 9. 写入 Redis 缓存
-            try {
-                String json = objectMapper.writeValueAsString(resp);
-                int baseTtl = 60;
-                // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
-                int jitter = ThreadLocalRandom.current().nextInt(30);
-                // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
-                int target = hotKey.ttlForPublic(baseTtl, pageKey);
-                redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
+            // 9. 仅将公开且已发布的详情写入共享缓存；草稿/私有内容不得跨用户复用。
+            if (isPublicDetail(row.getStatus(), row.getVisible())) {
+                try {
+                    String json = objectMapper.writeValueAsString(resp);
+                    int baseTtl = 60;
+                    // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
+                    int jitter = ThreadLocalRandom.current().nextInt(30);
+                    // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                    int target = hotKey.ttlForPublic(baseTtl, pageKey);
+                    redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
-                // L1 填充
-                knowPostDetailCache.put(pageKey, resp);
+                    // L1 填充
+                    knowPostDetailCache.put(pageKey, resp);
 
-                log.info("detail source=db key={}", pageKey);
-            } catch (Exception ignored) {}
+                    log.info("detail source=db key={}", pageKey);
+                } catch (Exception ignored) {}
+            }
 
             // 10. 释放锁并返回最终结果
             // 返回前调用 enrich 填充用户维度的 liked/faved 状态
@@ -454,24 +471,47 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
         }
         
+        KnowPostDetailResponse base;
         try {
             // 3. 反序列化缓存数据
-            KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
-
-            // L1 填充
-            knowPostDetailCache.put(pageKey, base);
-            
-            // 4. 记录热度并尝试续期
-            // 如果该内容正在被高频访问，自动延长其缓存 TTL
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source={} key={}", sourceLog, pageKey);
-            
-            // 5. 叠加实时数据（计数与用户状态）并返回
-            return enrichDetailResponse(base, uid, true);
+            base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
         }
+
+        ensureCachedDetailVisible(base, uid);
+
+        // L1 填充
+        knowPostDetailCache.put(pageKey, base);
+        
+        // 4. 记录热度并尝试续期
+        // 如果该内容正在被高频访问，自动延长其缓存 TTL
+        recordHotKeyAndExtendTtl(id, pageKey);
+        log.info("detail source={} key={}", sourceLog, pageKey);
+        
+        // 5. 叠加实时数据（计数与用户状态）并返回
+        return enrichDetailResponse(base, uid, true);
+    }
+
+    private void ensureCachedDetailVisible(KnowPostDetailResponse base, Long uid) {
+        if (isPubliclyReusableCachedDetail(base) || isAuthor(base, uid)) {
+            return;
+        }
+
+        throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+    }
+
+    private boolean isPubliclyReusableCachedDetail(KnowPostDetailResponse base) {
+        return "public".equals(base.visible()) && base.publishTime() != null;
+    }
+
+    private boolean isAuthor(KnowPostDetailResponse base, Long uid) {
+        return uid != null && base.authorId() != null && String.valueOf(uid).equals(base.authorId());
+    }
+
+    private boolean isPublicDetail(String status, String visible) {
+        return "published".equals(status) && "public".equals(visible);
     }
 
     /**
