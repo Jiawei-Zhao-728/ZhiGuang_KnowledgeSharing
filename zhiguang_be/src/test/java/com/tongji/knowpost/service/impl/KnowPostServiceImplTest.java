@@ -195,6 +195,34 @@ class KnowPostServiceImplTest {
         assertThat(updated.getContentUrl()).isEqualTo("https://cdn.example.test/posts/42/content.md");
     }
 
+    @Test
+    void privateVisibilityUpdateDeletesSearchAndRagIndexes() {
+        when(mapper.updateVisibility(42L, 7L, "private")).thenReturn(1);
+        when(idGen.nextId()).thenReturn(101L);
+
+        service.updateVisibility(7L, 42L, "private");
+
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+        verify(outboxMapper).insert(eq(101L), eq("knowpost"), eq(42L), eq("KnowPostVisibilityUpdated"), payloadCaptor.capture());
+        assertThat(payloadCaptor.getValue()).contains("\"op\":\"delete\"");
+        verify(ragIndexService).deletePostChunks(42L);
+        verify(ragIndexService, never()).ensureIndexed(42L);
+    }
+
+    @Test
+    void publicVisibilityUpdateUpsertsSearchAndRagIndexes() {
+        when(mapper.updateVisibility(42L, 7L, "public")).thenReturn(1);
+        when(idGen.nextId()).thenReturn(101L);
+
+        service.updateVisibility(7L, 42L, "public");
+
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+        verify(outboxMapper).insert(eq(101L), eq("knowpost"), eq(42L), eq("KnowPostVisibilityUpdated"), payloadCaptor.capture());
+        assertThat(payloadCaptor.getValue()).contains("\"op\":\"upsert\"");
+        verify(ragIndexService).ensureIndexed(42L);
+        verify(ragIndexService, never()).deletePostChunks(42L);
+    }
+
     private KnowPostDetailResponse detailResponse(String id, String authorId, String visible, Instant publishTime) {
         return new KnowPostDetailResponse(
                 id,
