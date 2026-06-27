@@ -232,25 +232,6 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
-        try {
-            long outId = idGen.nextId();
-            String op = "public".equals(visible) ? "upsert" : "delete";
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", op, "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostVisibilityUpdated", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after visibility update failed, post {}: {}", id, e.getMessage());
-        }
-
-        try {
-            if ("public".equals(visible)) {
-                ragIndexService.ensureIndexed(id);
-            } else {
-                ragIndexService.deletePostChunks(id);
-            }
-        } catch (Exception e) {
-            log.warn("RAG index update after visibility change failed, post {}: {}", id, e.getMessage());
-        }
-
         invalidateCache(id);
     }
 
@@ -269,6 +250,25 @@ public class KnowPostServiceImpl implements KnowPostService {
 
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
+        }
+
+        try {
+            long outId = idGen.nextId();
+            String op = "public".equals(visible) ? "upsert" : "delete";
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", op, "id", id));
+            outboxMapper.insert(outId, "knowpost", id, "KnowPostVisibilityUpdated", payload);
+        } catch (Exception e) {
+            log.warn("Outbox event after visibility update failed, post {}: {}", id, e.getMessage());
+        }
+
+        try {
+            if ("public".equals(visible)) {
+                ragIndexService.ensureIndexed(id);
+            } else {
+                ragIndexService.deletePostChunks(id);
+            }
+        } catch (Exception e) {
+            log.warn("RAG index update after visibility change failed, post {}: {}", id, e.getMessage());
         }
 
         invalidateCache(id);
