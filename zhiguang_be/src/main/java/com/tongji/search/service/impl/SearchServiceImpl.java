@@ -7,7 +7,6 @@ import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.FieldValueFactorModifier;
 import co.elastic.clients.elasticsearch._types.query_dsl.FunctionBoostMode;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
-import co.elastic.clients.elasticsearch.core.search.Suggestion;
 import co.elastic.clients.util.NamedValue;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.tongji.knowpost.api.dto.FeedItemResponse;
@@ -71,6 +70,8 @@ public class SearchServiceImpl implements SearchService {
                                             .fields("title^3", "body")));
                                     bq.filter(f -> f.term(t -> t.field("status")
                                             .value(v -> v.stringValue("published"))));
+                                    bq.filter(f -> f.term(t -> t.field("visible")
+                                            .value(v -> v.stringValue("public"))));
 
                                     if (tags != null && !tags.isEmpty()) {
                                         bq.filter(f -> f.terms(t -> t.field("tags")
@@ -166,27 +167,28 @@ public class SearchServiceImpl implements SearchService {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map<String, Object>> resp;
         try {
             resp = es.search(s -> s.index(INDEX)
-                    .suggest(sug -> sug.suggesters("title_suggest",
-                            sc -> sc.prefix(prefix).completion(c -> c.field("title_suggest").size(size))))
+                            .size(size)
+                            .query(q -> q.bool(b -> b
+                                    .must(m -> m.matchPhrasePrefix(mp -> mp.field("title").query(prefix)))
+                                    .filter(f -> f.term(t -> t.field("status")
+                                            .value(v -> v.stringValue("published"))))
+                                    .filter(f -> f.term(t -> t.field("visible")
+                                            .value(v -> v.stringValue("public"))))))
                     , (Class<Map<String, Object>>)(Class<?>) Map.class);
         } catch (Exception e) {
             return new SuggestResponse(Collections.emptyList());
         }
         List<String> items = new ArrayList<>();
         try {
-            var sugg = resp.suggest();
-            List<Suggestion<Map<String, Object>>> entry = sugg == null ? null : sugg.get("title_suggest");
-            if (entry != null) {
-                for (var s : entry) {
-                    var comp = s.completion();
-                    if (comp != null && comp.options() != null) {
-                        for (var opt : comp.options()) {
-                            String text = opt.text();
-                            if (text != null && !text.isBlank()) {
-                                items.add(text);
-                            }
-                        }
-                    }
+            List<Hit<Map<String, Object>>> hits = resp.hits() == null ? Collections.emptyList() : resp.hits().hits();
+            for (Hit<Map<String, Object>> hit : hits) {
+                Map<String, Object> source = hit.source();
+                if (source == null) {
+                    continue;
+                }
+                String title = asString(source.get("title"));
+                if (title != null && !title.isBlank() && !items.contains(title)) {
+                    items.add(title);
                 }
             }
         } catch (Exception ignored) {}

@@ -22,6 +22,6 @@ public class LoggingCodeSender implements CodeSender {
      */
     @Override
     public void sendCode(VerificationScene scene, String identifier, String code, int expireMinutes) {
-        log.info("Send verification code scene={} identifier={} code={} expireMinutes={}", scene, identifier, code, expireMinutes);
+        log.info("Verification code generated scene={} expireMinutes={}", scene, expireMinutes);
     }
 }

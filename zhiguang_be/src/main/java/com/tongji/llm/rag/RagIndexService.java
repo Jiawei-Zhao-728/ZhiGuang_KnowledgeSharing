@@ -47,18 +47,21 @@ public class RagIndexService {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {
             log.warn("Post {} not found", postId);
+            deleteExistingChunks(postId);
             return 0;
         }
 
         // 仅索引公开的已发布知文
         if (!"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
-            log.warn("Post {} is not public/published, skip indexing", postId);
+            log.warn("Post {} is not public/published, remove existing chunks", postId);
+            deleteExistingChunks(postId);
             return 0;
         }
 
         // 内容地址缺失则无法抓取正文
         if (!StringUtils.hasText(row.getContentUrl())) {
             log.warn("Post {} missing contentUrl or not found", postId);
+            deleteExistingChunks(postId);
             return 0;
         }
 
@@ -149,11 +152,12 @@ public class RagIndexService {
     /**
      * 删除旧切片：按 metadata.postId 精确删除，确保 upsert 幂等
      */
-    private void deleteExistingChunks(long postId) {
+    public void deleteExistingChunks(long postId) {
         try {
             if (!StringUtils.hasText(esProps.getIndex())) return;
             es.deleteByQuery(d -> d
                     .index(esProps.getIndex())
+                    .refresh(true)
                     .query(q -> q.term(t -> t
                             .field("metadata.postId")
                             .value(v -> v.stringValue(String.valueOf(postId))))));
