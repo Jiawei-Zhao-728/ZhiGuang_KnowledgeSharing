@@ -5,10 +5,15 @@ import com.tongji.auth.config.AuthProperties;
 import com.tongji.user.domain.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
+
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,15 +22,27 @@ class JwtServiceTest {
     private JwtService jwtService;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         AuthProperties properties = new AuthProperties();
         properties.getJwt().setIssuer("test-issuer");
-        properties.getJwt().setPrivateKey(new ClassPathResource("keys/private.pem"));
-        properties.getJwt().setPublicKey(new ClassPathResource("keys/public.pem"));
+        KeyPair keyPair = generateKeyPair();
+        properties.getJwt().setPrivateKey(new ByteArrayResource(toPem("PRIVATE KEY", keyPair.getPrivate().getEncoded()).getBytes(StandardCharsets.UTF_8)));
+        properties.getJwt().setPublicKey(new ByteArrayResource(toPem("PUBLIC KEY", keyPair.getPublic().getEncoded()).getBytes(StandardCharsets.UTF_8)));
         AuthConfiguration configuration = new AuthConfiguration(properties);
         JwtEncoder encoder = configuration.jwtEncoder();
         JwtDecoder decoder = configuration.jwtDecoder();
         jwtService = new JwtService(encoder, decoder, properties);
+    }
+
+    private KeyPair generateKeyPair() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        return generator.generateKeyPair();
+    }
+
+    private String toPem(String type, byte[] encoded) {
+        String body = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(encoded);
+        return "-----BEGIN " + type + "-----\n" + body + "\n-----END " + type + "-----\n";
     }
 
     @Test

@@ -80,7 +80,13 @@ public class SearchIndexService {
         try {
             KnowPostDetailRow row = knowPostMapper.findDetailById(id);
             if (row == null) {
-                log.warn("Index upsert skipped: post {} not found", id);
+                log.warn("Index upsert received missing post {}, writing tombstone", id);
+                softDeleteKnowPost(id);
+                return;
+            }
+            if (!"published".equals(row.getStatus()) || !"public".equals(row.getVisible())) {
+                log.info("Index upsert removing non-public post {} status={} visible={}", id, row.getStatus(), row.getVisible());
+                softDeleteKnowPost(id);
                 return;
             }
             Map<String, Object> doc = new HashMap<>();
@@ -96,6 +102,7 @@ public class SearchIndexService {
                 doc.put("publish_time", row.getPublishTime().toEpochMilli());
             }
             doc.put("status", row.getStatus());
+            doc.put("visible", row.getVisible());
             doc.put("tags", parseStringArray(row.getTags()));
             doc.put("img_urls", parseStringArray(row.getImgUrls()));
             if (row.getIsTop() != null) {
