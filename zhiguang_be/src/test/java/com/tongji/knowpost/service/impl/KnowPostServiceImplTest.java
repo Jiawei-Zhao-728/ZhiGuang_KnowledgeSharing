@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -72,14 +73,14 @@ class KnowPostServiceImplTest {
     void setUp() {
         detailCache = Caffeine.newBuilder().build();
 
-        when(redis.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get(anyString())).thenAnswer(invocation -> redisValues.get(invocation.getArgument(0)));
-        doAnswer(invocation -> {
+        lenient().when(redis.opsForValue()).thenReturn(valueOperations);
+        lenient().when(valueOperations.get(anyString())).thenAnswer(invocation -> redisValues.get(invocation.getArgument(0)));
+        lenient().doAnswer(invocation -> {
             redisValues.put(invocation.getArgument(0), invocation.getArgument(1));
             return null;
         }).when(valueOperations).set(anyString(), anyString(), any(Duration.class));
-        when(redis.getExpire(anyString())).thenReturn(0L);
-        when(counterService.getCounts(anyString(), anyString(), any())).thenReturn(Map.of("like", 0L, "fav", 0L));
+        lenient().when(redis.getExpire(anyString())).thenReturn(0L);
+        lenient().when(counterService.getCounts(anyString(), anyString(), any())).thenReturn(Map.of("like", 0L, "fav", 0L));
 
         service = new KnowPostServiceImpl(
                 mapper,
