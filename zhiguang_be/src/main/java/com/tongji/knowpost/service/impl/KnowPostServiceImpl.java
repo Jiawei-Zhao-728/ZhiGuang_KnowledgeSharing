@@ -324,7 +324,10 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
-            recordHotKeyAndExtendTtl(id, pageKey);
+            assertCanViewCachedDetail(local, currentUserIdNullable);
+            if (isPublicCachedDetail(local)) {
+                recordHotKeyAndExtendTtl(id, pageKey);
+            }
             log.info("detail source=local key={}", pageKey);
             return enrichDetailResponse(local, currentUserIdNullable, true);
         }
@@ -410,21 +413,25 @@ public class KnowPostServiceImpl implements KnowPostService {
                     row.getPublishTime()
             );
 
-            // 9. 写入 Redis 缓存
-            try {
-                String json = objectMapper.writeValueAsString(resp);
-                int baseTtl = 60;
-                // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
-                int jitter = ThreadLocalRandom.current().nextInt(30);
-                // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
-                int target = hotKey.ttlForPublic(baseTtl, pageKey);
-                redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
+            // 9. 仅缓存公开已发布内容；草稿/私密内容不进入共享缓存，避免后续越权命中
+            if (isPublic) {
+                try {
+                    String json = objectMapper.writeValueAsString(resp);
+                    int baseTtl = 60;
+                    // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
+                    int jitter = ThreadLocalRandom.current().nextInt(30);
+                    // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                    int target = hotKey.ttlForPublic(baseTtl, pageKey);
+                    redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
-                // L1 填充
-                knowPostDetailCache.put(pageKey, resp);
+                    // L1 填充
+                    knowPostDetailCache.put(pageKey, resp);
 
-                log.info("detail source=db key={}", pageKey);
-            } catch (Exception ignored) {}
+                    log.info("detail source=db key={}", pageKey);
+                } catch (Exception ignored) {}
+            } else {
+                log.info("detail source=db-no-cache key={}", pageKey);
+            }
 
             // 10. 释放锁并返回最终结果
             // 返回前调用 enrich 填充用户维度的 liked/faved 状态
@@ -457,21 +464,45 @@ public class KnowPostServiceImpl implements KnowPostService {
         try {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            assertCanViewCachedDetail(base, uid);
 
-            // L1 填充
-            knowPostDetailCache.put(pageKey, base);
+            // L1 填充（仅公开已发布内容允许进入共享本地缓存）
+            if (isPublicCachedDetail(base)) {
+                knowPostDetailCache.put(pageKey, base);
+            }
             
             // 4. 记录热度并尝试续期
             // 如果该内容正在被高频访问，自动延长其缓存 TTL
-            recordHotKeyAndExtendTtl(id, pageKey);
+            if (isPublicCachedDetail(base)) {
+                recordHotKeyAndExtendTtl(id, pageKey);
+            }
             log.info("detail source={} key={}", sourceLog, pageKey);
             
             // 5. 叠加实时数据（计数与用户状态）并返回
             return enrichDetailResponse(base, uid, true);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
         }
+    }
+
+    private void assertCanViewCachedDetail(KnowPostDetailResponse base, Long uid) {
+        if (base == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
+        }
+
+        boolean isOwner = uid != null && base.authorId() != null && String.valueOf(uid).equals(base.authorId());
+        if (!isPublicCachedDetail(base) && !isOwner) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+        }
+    }
+
+    private boolean isPublicCachedDetail(KnowPostDetailResponse base) {
+        return base != null
+                && "public".equals(base.visible())
+                && base.publishTime() != null;
     }
 
     /**
