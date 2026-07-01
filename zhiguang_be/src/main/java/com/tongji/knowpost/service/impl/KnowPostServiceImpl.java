@@ -13,6 +13,7 @@ import com.tongji.knowpost.model.KnowPost;
 import com.tongji.knowpost.model.KnowPostDetailRow;
 import com.tongji.knowpost.api.dto.KnowPostDetailResponse;
 import com.github.benmanes.caffeine.cache.Cache;
+import com.tongji.knowpost.service.cache.KnowPostDetailCacheEntry;
 import com.tongji.counter.service.CounterService;
 import com.tongji.storage.config.OssProperties;
 import com.tongji.llm.rag.RagIndexService;
@@ -46,7 +47,7 @@ public class KnowPostServiceImpl implements KnowPostService {
     private final UserCounterService userCounterService;
     private final StringRedisTemplate redis;
     @Qualifier("knowPostDetailCache")
-    private final Cache<String, KnowPostDetailResponse> knowPostDetailCache;
+    private final Cache<String, KnowPostDetailCacheEntry> knowPostDetailCache;
     private final HotKeyDetector hotKey;
     private static final Logger log = LoggerFactory.getLogger(KnowPostServiceImpl.class);
     private static final int DETAIL_LAYOUT_VER = 1;
@@ -63,7 +64,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             CounterService counterService,
             UserCounterService userCounterService,
             StringRedisTemplate redis,
-            @Qualifier("knowPostDetailCache") Cache<String, KnowPostDetailResponse> knowPostDetailCache,
+            @Qualifier("knowPostDetailCache") Cache<String, KnowPostDetailCacheEntry> knowPostDetailCache,
             HotKeyDetector hotKey,
             RagIndexService ragIndexService,
             OutboxMapper outboxMapper
@@ -322,11 +323,12 @@ public class KnowPostServiceImpl implements KnowPostService {
         String pageKey = "knowpost:detail:" + id + ":v" + DETAIL_LAYOUT_VER;
         
         // 0. L1 本地缓存（Caffeine）
-        KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
+        KnowPostDetailCacheEntry local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source=local key={}", pageKey);
-            return enrichDetailResponse(local, currentUserIdNullable, true);
+            KnowPostDetailResponse localResp = processCacheEntry(local, id, pageKey, currentUserIdNullable, "local");
+            if (localResp != null) {
+                return localResp;
+            }
         }
 
         String cached = redis.opsForValue().get(pageKey);
@@ -389,47 +391,48 @@ public class KnowPostServiceImpl implements KnowPostService {
             Long likeCount = counts.getOrDefault("like", 0L);
             Long favoriteCount = counts.getOrDefault("fav", 0L);
 
-            resp = new KnowPostDetailResponse(
+            KnowPostDetailCacheEntry cacheEntry = new KnowPostDetailCacheEntry(
                     String.valueOf(row.getId()),
                     row.getTitle(),
                     row.getDescription(),
                     row.getContentUrl(),
                     images,
                     tags,
-                    String.valueOf(row.getCreatorId()),
+                    row.getCreatorId(),
                     row.getAuthorAvatar(),
                     row.getAuthorNickname(),
                     row.getAuthorTagJson(),
                     likeCount,
                     favoriteCount,
-                    null, // liked 状态暂时留空，由 enrich 填充
-                    null, // faved 状态暂时留空，由 enrich 填充
                     row.getIsTop(),
                     row.getVisible(),
                     row.getType(),
-                    row.getPublishTime()
+                    row.getPublishTime(),
+                    row.getStatus()
             );
 
-            // 9. 写入 Redis 缓存
-            try {
-                String json = objectMapper.writeValueAsString(resp);
-                int baseTtl = 60;
-                // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
-                int jitter = ThreadLocalRandom.current().nextInt(30);
-                // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
-                int target = hotKey.ttlForPublic(baseTtl, pageKey);
-                redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
+            // 9. 只缓存公开已发布内容；草稿/私密内容必须每次回源校验所有者。
+            if (isPublic(cacheEntry)) {
+                try {
+                    String json = objectMapper.writeValueAsString(cacheEntry);
+                    int baseTtl = 60;
+                    // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
+                    int jitter = ThreadLocalRandom.current().nextInt(30);
+                    // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                    int target = hotKey.ttlForPublic(baseTtl, pageKey);
+                    redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
-                // L1 填充
-                knowPostDetailCache.put(pageKey, resp);
+                    // L1 填充
+                    knowPostDetailCache.put(pageKey, cacheEntry);
 
-                log.info("detail source=db key={}", pageKey);
-            } catch (Exception ignored) {}
+                    log.info("detail source=db key={}", pageKey);
+                } catch (Exception ignored) {}
+            }
 
             // 10. 释放锁并返回最终结果
             // 返回前调用 enrich 填充用户维度的 liked/faved 状态
             singleFlight.remove(pageKey);
-            return enrichDetailResponse(resp, currentUserIdNullable, false);
+            return enrichDetailResponse(cacheEntry, currentUserIdNullable, false);
         }
     }
 
@@ -456,22 +459,36 @@ public class KnowPostServiceImpl implements KnowPostService {
         
         try {
             // 3. 反序列化缓存数据
-            KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            KnowPostDetailCacheEntry base = objectMapper.readValue(cached, KnowPostDetailCacheEntry.class);
 
-            // L1 填充
-            knowPostDetailCache.put(pageKey, base);
-            
-            // 4. 记录热度并尝试续期
-            // 如果该内容正在被高频访问，自动延长其缓存 TTL
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source={} key={}", sourceLog, pageKey);
-            
-            // 5. 叠加实时数据（计数与用户状态）并返回
-            return enrichDetailResponse(base, uid, true);
+            return processCacheEntry(base, id, pageKey, uid, sourceLog);
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
             return null;
         }
+    }
+
+    private KnowPostDetailResponse processCacheEntry(KnowPostDetailCacheEntry base, long id, String pageKey, Long uid, String sourceLog) {
+        if (base == null || !hasCacheAuthorizationMetadata(base)) {
+            redis.delete(pageKey);
+            knowPostDetailCache.invalidate(pageKey);
+            return null;
+        }
+
+        if (!canView(base, uid)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+        }
+
+        // L1 填充
+        knowPostDetailCache.put(pageKey, base);
+
+        // 记录热度并尝试续期
+        // 如果该内容正在被高频访问，自动延长其缓存 TTL
+        recordHotKeyAndExtendTtl(id, pageKey);
+        log.info("detail source={} key={}", sourceLog, pageKey);
+
+        // 叠加实时数据（计数与用户状态）并返回
+        return enrichDetailResponse(base, uid, true);
     }
 
     /**
@@ -482,7 +499,7 @@ public class KnowPostServiceImpl implements KnowPostService {
      * @param refreshCounts 是否需要从 CounterService 刷新计数（缓存命中时需要，DB 回源时不需要）
      * @return 叠加了最新状态的响应对象
      */
-    private KnowPostDetailResponse enrichDetailResponse(KnowPostDetailResponse base, Long uid, boolean refreshCounts) {
+    private KnowPostDetailResponse enrichDetailResponse(KnowPostDetailCacheEntry base, Long uid, boolean refreshCounts) {
         Long likeCount = base.likeCount();
         Long favoriteCount = base.favoriteCount();
 
@@ -509,7 +526,7 @@ public class KnowPostServiceImpl implements KnowPostService {
                 base.contentUrl(),
                 base.images(),
                 base.tags(),
-                base.authorId(),
+                base.authorId() == null ? null : String.valueOf(base.authorId()),
                 base.authorAvatar(),
                 base.authorNickname(),
                 base.authorTagJson(),
@@ -522,6 +539,18 @@ public class KnowPostServiceImpl implements KnowPostService {
                 base.type(),
                 base.publishTime()
         );
+    }
+
+    private boolean hasCacheAuthorizationMetadata(KnowPostDetailCacheEntry base) {
+        return base.authorId() != null && base.status() != null && base.visible() != null;
+    }
+
+    private boolean canView(KnowPostDetailCacheEntry base, Long uid) {
+        return isPublic(base) || (uid != null && uid.equals(base.authorId()));
+    }
+
+    private boolean isPublic(KnowPostDetailCacheEntry base) {
+        return "published".equals(base.status()) && "public".equals(base.visible());
     }
 
     /**
