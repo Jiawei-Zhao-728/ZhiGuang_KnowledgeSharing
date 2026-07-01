@@ -65,7 +65,7 @@ class KnowPostServiceImplTest {
         service = new KnowPostServiceImpl(
                 mapper,
                 mock(SnowflakeIdGenerator.class),
-                new ObjectMapper(),
+                new ObjectMapper().findAndRegisterModules(),
                 new OssProperties(),
                 counterService,
                 mock(UserCounterService.class),
