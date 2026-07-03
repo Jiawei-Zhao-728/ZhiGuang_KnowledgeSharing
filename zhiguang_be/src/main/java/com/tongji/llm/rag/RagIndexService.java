@@ -47,12 +47,14 @@ public class RagIndexService {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {
             log.warn("Post {} not found", postId);
+            deletePostIndex(postId);
             return 0;
         }
 
         // 仅索引公开的已发布知文
         if (!"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
             log.warn("Post {} is not public/published, skip indexing", postId);
+            deletePostIndex(postId);
             return 0;
         }
 
@@ -80,7 +82,7 @@ public class RagIndexService {
         // 先按 Markdown 标题切段，再做固定长度切片（带重叠）
         List<String> chunks = chunkMarkdown(text);
         // 幂等 upsert：先删除旧切片
-        deleteExistingChunks(postId);
+        deletePostIndex(postId);
 
         // 组装 Document（文本 + 业务元数据），用于向量写入与检索过滤
         List<Document> docs = new ArrayList<>(chunks.size());
@@ -149,7 +151,7 @@ public class RagIndexService {
     /**
      * 删除旧切片：按 metadata.postId 精确删除，确保 upsert 幂等
      */
-    private void deleteExistingChunks(long postId) {
+    public void deletePostIndex(long postId) {
         try {
             if (!StringUtils.hasText(esProps.getIndex())) return;
             es.deleteByQuery(d -> d
