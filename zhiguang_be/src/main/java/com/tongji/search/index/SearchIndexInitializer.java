@@ -47,6 +47,7 @@ public class SearchIndexInitializer {
                     .properties("favorite_count", Property.of(p -> p.integer(IntegerNumberProperty.of(b -> b))))
                     .properties("view_count", Property.of(p -> p.integer(IntegerNumberProperty.of(b -> b))))
                     .properties("status", Property.of(p -> p.keyword(KeywordProperty.of(b -> b))))
+                    .properties("visible", Property.of(p -> p.keyword(KeywordProperty.of(b -> b))))
                     .properties("img_urls", Property.of(p -> p.keyword(KeywordProperty.of(b -> b))))
                     .properties("is_top", Property.of(p -> p.keyword(KeywordProperty.of(b -> b))))
                     .properties("title_suggest", Property.of(p -> p.completion(CompletionProperty.of(b -> b)))
