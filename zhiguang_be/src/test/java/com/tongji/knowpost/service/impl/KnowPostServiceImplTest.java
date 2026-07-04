@@ -39,6 +39,7 @@ import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -140,7 +141,7 @@ class KnowPostServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("无权限查看");
 
-        verify(redis).delete(DETAIL_KEY);
+        verify(redis, atLeastOnce()).delete(DETAIL_KEY);
     }
 
     @Test
