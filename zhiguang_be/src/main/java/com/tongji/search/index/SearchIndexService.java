@@ -81,6 +81,12 @@ public class SearchIndexService {
             KnowPostDetailRow row = knowPostMapper.findDetailById(id);
             if (row == null) {
                 log.warn("Index upsert skipped: post {} not found", id);
+                softDeleteKnowPost(id);
+                return;
+            }
+            if (!isPublicPublished(row)) {
+                log.info("Index upsert replaced with soft delete for non-public post {}", id);
+                softDeleteKnowPost(id);
                 return;
             }
             Map<String, Object> doc = new HashMap<>();
@@ -96,6 +102,7 @@ public class SearchIndexService {
                 doc.put("publish_time", row.getPublishTime().toEpochMilli());
             }
             doc.put("status", row.getStatus());
+            doc.put("visible", row.getVisible());
             doc.put("tags", parseStringArray(row.getTags()));
             doc.put("img_urls", parseStringArray(row.getImgUrls()));
             if (row.getIsTop() != null) {
@@ -142,6 +149,7 @@ public class SearchIndexService {
             Map<String, Object> doc = new HashMap<>();
             doc.put("content_id", id);
             doc.put("status", "deleted");
+            doc.put("visible", "private");
             IndexRequest<Map<String, Object>> req = IndexRequest.of(b -> b
                     .index(INDEX)
                     .id(String.valueOf(id))
@@ -152,6 +160,12 @@ public class SearchIndexService {
         } catch (Exception e) {
             log.error("Index soft delete failed for post {}: {}", id, e.getMessage());
         }
+    }
+
+    private boolean isPublicPublished(KnowPostDetailRow row) {
+        return row != null
+                && "published".equals(row.getStatus())
+                && "public".equals(row.getVisible());
     }
 
     /**

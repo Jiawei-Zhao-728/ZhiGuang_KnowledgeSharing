@@ -47,12 +47,14 @@ public class RagIndexService {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {
             log.warn("Post {} not found", postId);
+            deleteIndexedChunks(postId);
             return 0;
         }
 
         // 仅索引公开的已发布知文
-        if (!"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
-            log.warn("Post {} is not public/published, skip indexing", postId);
+        if (!isPublicPublished(row)) {
+            log.warn("Post {} is not public/published, purge existing index chunks", postId);
+            deleteIndexedChunks(postId);
             return 0;
         }
 
@@ -80,7 +82,7 @@ public class RagIndexService {
         // 先按 Markdown 标题切段，再做固定长度切片（带重叠）
         List<String> chunks = chunkMarkdown(text);
         // 幂等 upsert：先删除旧切片
-        deleteExistingChunks(postId);
+        deleteIndexedChunks(postId);
 
         // 组装 Document（文本 + 业务元数据），用于向量写入与检索过滤
         List<Document> docs = new ArrayList<>(chunks.size());
@@ -149,7 +151,7 @@ public class RagIndexService {
     /**
      * 删除旧切片：按 metadata.postId 精确删除，确保 upsert 幂等
      */
-    private void deleteExistingChunks(long postId) {
+    public void deleteIndexedChunks(long postId) {
         try {
             if (!StringUtils.hasText(esProps.getIndex())) return;
             es.deleteByQuery(d -> d
@@ -160,6 +162,17 @@ public class RagIndexService {
         } catch (Exception e) {
             log.warn("Delete old chunks failed for post {}: {}", postId, e.getMessage());
         }
+    }
+
+    public boolean isPublicPublished(long postId) {
+        KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+        return isPublicPublished(row);
+    }
+
+    private boolean isPublicPublished(KnowPostDetailRow row) {
+        return row != null
+                && "published".equalsIgnoreCase(row.getStatus())
+                && "public".equalsIgnoreCase(row.getVisible());
     }
 
     private static String asString(Object o) {
