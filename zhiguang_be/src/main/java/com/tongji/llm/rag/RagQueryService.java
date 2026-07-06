@@ -8,6 +8,10 @@ import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import com.tongji.common.exception.BusinessException;
+import com.tongji.common.exception.ErrorCode;
+import com.tongji.knowpost.mapper.KnowPostMapper;
+import com.tongji.knowpost.model.KnowPostDetailRow;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,11 +30,18 @@ public class RagQueryService {
     private final ChatClient chatClient;
     // 索引服务：确保帖子在问答前已建立/更新索引
     private final RagIndexService indexService;
+    private final KnowPostMapper knowPostMapper;
 
     /**
      * 使用 WebFlux 返回回答内容的流。
      */
     public Flux<String> streamAnswerFlux(long postId, String question, int topK, int maxTokens) {
+        KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+        if (row == null || !"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
+            indexService.deletePostIndex(postId);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "无权限查看");
+        }
+
         // 轻量保障：如索引不存在或指纹未变更则跳过，否则重建
         indexService.ensureIndexed(postId);
 
