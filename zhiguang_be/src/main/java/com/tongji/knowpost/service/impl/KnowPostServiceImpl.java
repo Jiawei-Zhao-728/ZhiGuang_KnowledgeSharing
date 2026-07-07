@@ -210,9 +210,6 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         invalidateCache(id);
-
-        emitSearchOutbox(id, "KnowPostVisibilityUpdated", "upsert");
-        refreshRagVisibility(id, visible);
     }
 
     /**
@@ -233,6 +230,9 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         invalidateCache(id);
+
+        emitSearchOutbox(id, "KnowPostVisibilityUpdated", "upsert");
+        refreshRagVisibility(id, visible);
     }
 
     /**
