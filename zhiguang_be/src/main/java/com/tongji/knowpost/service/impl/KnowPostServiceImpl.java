@@ -49,7 +49,8 @@ public class KnowPostServiceImpl implements KnowPostService {
     private final Cache<String, KnowPostDetailResponse> knowPostDetailCache;
     private final HotKeyDetector hotKey;
     private static final Logger log = LoggerFactory.getLogger(KnowPostServiceImpl.class);
-    private static final int DETAIL_LAYOUT_VER = 1;
+    private static final int DETAIL_LAYOUT_VER = 2;
+    private static final int LEGACY_DETAIL_LAYOUT_VER = 1;
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
     private final RagIndexService ragIndexService;
     private final OutboxMapper outboxMapper;
@@ -162,13 +163,10 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
-        // 元数据变更后写入 Outbox 事件，驱动搜索索引更新
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostMetadataUpdated", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after metadata update failed, post {}: {}", id, e.getMessage());
+        emitSearchOutbox(id, "KnowPostMetadataUpdated", "upsert");
+
+        if (visible != null) {
+            refreshRagVisibility(id, visible);
         }
 
         invalidateCache(id);
@@ -188,14 +186,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             userCounterService.incrementPosts(creatorId, 1);
         } catch (Exception ignored) {}
 
-        // 写入 Outbox 事件，驱动搜索索引增量更新
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostPublished", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after publish failed, post {}: {}", id, e.getMessage());
-        }
+        emitSearchOutbox(id, "KnowPostPublished", "upsert");
 
         // 发布成功后触发一次预索引，减少首次问答冷启动
         try {
@@ -239,6 +230,9 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         invalidateCache(id);
+
+        emitSearchOutbox(id, "KnowPostVisibilityUpdated", "upsert");
+        refreshRagVisibility(id, visible);
     }
 
     /**
@@ -253,13 +247,12 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
-        // 写入 Outbox 事件，驱动搜索索引软删
+        emitSearchOutbox(id, "KnowPostDeleted", "delete");
+
         try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "delete", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostDeleted", payload);
+            ragIndexService.purgePost(id);
         } catch (Exception e) {
-            log.warn("Outbox event after delete failed, post {}: {}", id, e.getMessage());
+            log.warn("RAG purge after delete failed, post {}: {}", id, e.getMessage());
         }
 
         invalidateCache(id);
@@ -298,6 +291,28 @@ public class KnowPostServiceImpl implements KnowPostService {
         return "https://" + ossProperties.getBucket() + "." + ossProperties.getEndpoint() + "/" + objectKey;
     }
 
+    private void emitSearchOutbox(long id, String eventType, String operation) {
+        try {
+            long outId = idGen.nextId();
+            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", operation, "id", id));
+            outboxMapper.insert(outId, "knowpost", id, eventType, payload);
+        } catch (Exception e) {
+            log.warn("Outbox event {} failed, post {}: {}", eventType, id, e.getMessage());
+        }
+    }
+
+    private void refreshRagVisibility(long id, String visible) {
+        try {
+            if ("public".equals(visible)) {
+                ragIndexService.ensureIndexed(id);
+            } else {
+                ragIndexService.purgePost(id);
+            }
+        } catch (Exception e) {
+            log.warn("RAG visibility refresh failed, post {}: {}", id, e.getMessage());
+        }
+    }
+
     /**
      * 获取知文详情（含作者信息、图片列表）。
      * <p>
@@ -324,9 +339,12 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 0. L1 本地缓存（Caffeine）
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
         if (local != null) {
-            recordHotKeyAndExtendTtl(id, pageKey);
-            log.info("detail source=local key={}", pageKey);
-            return enrichDetailResponse(local, currentUserIdNullable, true);
+            if (isPublicCachedDetail(local)) {
+                recordHotKeyAndExtendTtl(id, pageKey);
+                log.info("detail source=local key={}", pageKey);
+                return enrichDetailResponse(local, currentUserIdNullable, true);
+            }
+            knowPostDetailCache.invalidate(pageKey);
         }
 
         String cached = redis.opsForValue().get(pageKey);
@@ -410,21 +428,23 @@ public class KnowPostServiceImpl implements KnowPostService {
                     row.getPublishTime()
             );
 
-            // 9. 写入 Redis 缓存
-            try {
-                String json = objectMapper.writeValueAsString(resp);
-                int baseTtl = 60;
-                // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
-                int jitter = ThreadLocalRandom.current().nextInt(30);
-                // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
-                int target = hotKey.ttlForPublic(baseTtl, pageKey);
-                redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
+            // 9. 仅公开已发布内容写入共享缓存；作者私有视图必须每次回源校验权限。
+            if (isPublic) {
+                try {
+                    String json = objectMapper.writeValueAsString(resp);
+                    int baseTtl = 60;
+                    // 增加随机抖动（Jitter），防止大量缓存同时过期（雪崩）
+                    int jitter = ThreadLocalRandom.current().nextInt(30);
+                    // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                    int target = hotKey.ttlForPublic(baseTtl, pageKey);
+                    redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
-                // L1 填充
-                knowPostDetailCache.put(pageKey, resp);
+                    // L1 填充
+                    knowPostDetailCache.put(pageKey, resp);
 
-                log.info("detail source=db key={}", pageKey);
-            } catch (Exception ignored) {}
+                    log.info("detail source=db key={}", pageKey);
+                } catch (Exception ignored) {}
+            }
 
             // 10. 释放锁并返回最终结果
             // 返回前调用 enrich 填充用户维度的 liked/faved 状态
@@ -457,6 +477,11 @@ public class KnowPostServiceImpl implements KnowPostService {
         try {
             // 3. 反序列化缓存数据
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
+            if (!isPublicCachedDetail(base)) {
+                redis.delete(pageKey);
+                knowPostDetailCache.invalidate(pageKey);
+                return null;
+            }
 
             // L1 填充
             knowPostDetailCache.put(pageKey, base);
@@ -524,6 +549,10 @@ public class KnowPostServiceImpl implements KnowPostService {
         );
     }
 
+    private boolean isPublicCachedDetail(KnowPostDetailResponse detail) {
+        return detail != null && "public".equals(detail.visible());
+    }
+
     /**
      * 记录内容热度，并根据热度等级延长相关缓存的 TTL。
      * 延长的缓存包括：
@@ -557,10 +586,13 @@ public class KnowPostServiceImpl implements KnowPostService {
 
     private void invalidateCache(long id) {
         String pageKey = "knowpost:detail:" + id + ":v" + DETAIL_LAYOUT_VER;
+        String legacyPageKey = "knowpost:detail:" + id + ":v" + LEGACY_DETAIL_LAYOUT_VER;
 
         redis.delete(pageKey);
+        redis.delete(legacyPageKey);
 
         knowPostDetailCache.invalidate(pageKey);
+        knowPostDetailCache.invalidate(legacyPageKey);
     }
 
     private List<String> parseStringArray(String json) {
