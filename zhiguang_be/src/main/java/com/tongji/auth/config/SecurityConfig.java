@@ -8,7 +8,11 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.authorization.AuthorizationDecision;
+import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -65,10 +69,21 @@ public class SecurityConfig {
                                 "/api/v1/auth/logout",
                                 "/api/v1/auth/password/reset"
                         ).permitAll()
-                        .anyRequest().authenticated()
+                        .anyRequest().access(accessTokenOnly())
                 )
                 .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()));
         return http.build();
+    }
+
+    private AuthorizationManager<RequestAuthorizationContext> accessTokenOnly() {
+        return (authentication, context) -> {
+            var auth = authentication.get();
+            boolean granted = auth != null
+                    && auth.isAuthenticated()
+                    && auth instanceof JwtAuthenticationToken jwtAuth
+                    && "access".equals(jwtAuth.getToken().getClaimAsString("token_type"));
+            return new AuthorizationDecision(granted);
+        };
     }
 
     /**

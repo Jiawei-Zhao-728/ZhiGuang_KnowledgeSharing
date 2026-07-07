@@ -263,7 +263,7 @@ public class RelationServiceImpl implements RelationService {
         for (Long id : ids) {
             User u = m.get(id);
             if (u == null) continue;
-            out.add(new ProfileResponse(u.getId(), u.getNickname(), u.getAvatar(), u.getBio(), u.getZgId(), u.getGender(), u.getBirthday(), u.getSchool(), u.getPhone(), u.getEmail(), u.getTagsJson()));
+            out.add(new ProfileResponse(u.getId(), u.getNickname(), u.getAvatar(), u.getBio(), u.getZgId(), u.getGender(), u.getBirthday(), u.getSchool(), null, null, u.getTagsJson()));
         }
         return out;
     }
