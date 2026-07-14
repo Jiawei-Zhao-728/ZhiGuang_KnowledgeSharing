@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Pattern;
 
 @Service
 public class KnowPostServiceImpl implements KnowPostService {
@@ -50,6 +51,7 @@ public class KnowPostServiceImpl implements KnowPostService {
     private final HotKeyDetector hotKey;
     private static final Logger log = LoggerFactory.getLogger(KnowPostServiceImpl.class);
     private static final int DETAIL_LAYOUT_VER = 1;
+    private static final Pattern CONTENT_EXTENSION = Pattern.compile("[A-Za-z0-9]{1,16}");
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
     private final RagIndexService ragIndexService;
     private final OutboxMapper outboxMapper;
@@ -106,6 +108,8 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional
     public void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256) {
+        validateContentObjectKey(id, objectKey);
+
         // 缓存双删
         invalidateCache(id);
 
@@ -132,6 +136,15 @@ public class KnowPostServiceImpl implements KnowPostService {
             ragIndexService.ensureIndexed(id);
         } catch (Exception e) {
             log.warn("Pre-index after content confirm failed, post {}: {}", id, e.getMessage());
+        }
+    }
+
+    private void validateContentObjectKey(long id, String objectKey) {
+        String expectedPrefix = "posts/" + id + "/content.";
+        if (objectKey == null
+                || !objectKey.startsWith(expectedPrefix)
+                || !CONTENT_EXTENSION.matcher(objectKey.substring(expectedPrefix.length())).matches()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容对象路径非法");
         }
     }
 
