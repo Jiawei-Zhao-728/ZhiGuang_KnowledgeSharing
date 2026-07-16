@@ -114,9 +114,14 @@ public class CanalKafkaBridge implements SmartLifecycle {
                         } catch (InterruptedException ignored) {}
                         continue;
                     }
-                    publishBatch(message);
-                    // 仅在整批消息均被 Kafka 确认后推进 Canal 位点。
-                    connector.ack(batchId);
+                    try {
+                        publishAndAck(connector, message);
+                    } catch (Exception e) {
+                        log.error("Canal batch {} publish failed; rolled back for retry", batchId, e);
+                        try {
+                            Thread.sleep(intervalMs);
+                        } catch (InterruptedException ignored) {}
+                    }
                 }
             } catch (Exception e) {
                 log.error("Canal bridge error", e);
@@ -132,6 +137,24 @@ public class CanalKafkaBridge implements SmartLifecycle {
                 }
             }
         });
+    }
+
+    /**
+     * 投递批次并在成功后确认 Canal 位点；失败时回滚批次以便重试。
+     */
+    void publishAndAck(CanalConnector batchConnector, Message message) throws Exception {
+        long batchId = message.getId();
+        try {
+            publishBatch(message);
+            batchConnector.ack(batchId);
+        } catch (Exception e) {
+            try {
+                batchConnector.rollback(batchId);
+            } catch (Exception rollbackFailure) {
+                e.addSuppressed(rollbackFailure);
+            }
+            throw e;
+        }
     }
 
     /**
