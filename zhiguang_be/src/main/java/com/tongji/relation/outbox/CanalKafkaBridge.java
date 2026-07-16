@@ -114,51 +114,14 @@ public class CanalKafkaBridge implements SmartLifecycle {
                         } catch (InterruptedException ignored) {}
                         continue;
                     }
-                    for (CanalEntry.Entry entry : message.getEntries()) {
-                        // 仅处理行级数据变更事件
-                        if (entry.getEntryType() != CanalEntry.EntryType.ROWDATA) {
-                            continue;
-                        }
-                        CanalEntry.RowChange rowChange;
-
+                    try {
+                        publishAndAck(connector, message);
+                    } catch (Exception e) {
+                        log.error("Canal batch {} publish failed; rolled back for retry", batchId, e);
                         try {
-                            // 解析二进制为 RowChange（包含 INSERT/UPDATE 的行变更）
-                            rowChange = CanalEntry.RowChange.parseFrom(entry.getStoreValue());
-                        } catch (Exception e) {
-                            continue;
-                        }
-
-                        CanalEntry.EventType eventType = rowChange.getEventType();
-                        // 仅转发 INSERT/UPDATE 事件，忽略其他类型
-                        if (eventType != CanalEntry.EventType.INSERT && eventType != CanalEntry.EventType.UPDATE) {
-                            continue;
-                        }
-                        ArrayNode dataArray = objectMapper.createArrayNode();
-
-                        for (CanalEntry.RowData rowData : rowChange.getRowDatasList()) {
-                            ObjectNode rowNode = objectMapper.createObjectNode();
-                            for (CanalEntry.Column col : rowData.getAfterColumnsList()) {
-                                // 提取 payload 字段值（JSON 字符串），供下游消费
-                                if ("payload".equalsIgnoreCase(col.getName())) {
-                                    rowNode.put("payload", col.getValue());
-                                }
-                            }
-                            dataArray.add(rowNode);
-                        }
-
-                        ObjectNode msgNode = objectMapper.createObjectNode();
-                        msgNode.put("table", entry.getHeader().getTableName());
-                        msgNode.put("type", eventType == CanalEntry.EventType.INSERT ? "INSERT" : "UPDATE");
-                        msgNode.set("data", dataArray);
-
-                        try {
-                            // 序列化并发送到 Kafka 主题（canal-outbox）
-                            String json = objectMapper.writeValueAsString(msgNode);
-                            kafka.send(OutboxTopics.CANAL_OUTBOX, json);
-                        } catch (Exception ignored) {}
+                            Thread.sleep(intervalMs);
+                        } catch (InterruptedException ignored) {}
                     }
-                    // 批次确认（推进位点），避免消息重放
-                    connector.ack(batchId);
                 }
             } catch (Exception e) {
                 log.error("Canal bridge error", e);
@@ -174,6 +137,66 @@ public class CanalKafkaBridge implements SmartLifecycle {
                 }
             }
         });
+    }
+
+    /**
+     * 投递批次并在成功后确认 Canal 位点；失败时回滚批次以便重试。
+     */
+    void publishAndAck(CanalConnector batchConnector, Message message) throws Exception {
+        long batchId = message.getId();
+        try {
+            publishBatch(message);
+            batchConnector.ack(batchId);
+        } catch (Exception e) {
+            try {
+                batchConnector.rollback(batchId);
+            } catch (Exception rollbackFailure) {
+                e.addSuppressed(rollbackFailure);
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 将一个 Canal 批次完整投递到 Kafka。
+     * 任何解析、序列化或 broker 确认失败都会向上传播，使调用方不会确认 Canal 位点。
+     */
+    void publishBatch(Message message) throws Exception {
+        for (CanalEntry.Entry entry : message.getEntries()) {
+            // 仅处理行级数据变更事件
+            if (entry.getEntryType() != CanalEntry.EntryType.ROWDATA) {
+                continue;
+            }
+
+            // 解析二进制为 RowChange（包含 INSERT/UPDATE 的行变更）
+            CanalEntry.RowChange rowChange = CanalEntry.RowChange.parseFrom(entry.getStoreValue());
+            CanalEntry.EventType eventType = rowChange.getEventType();
+            // 仅转发 INSERT/UPDATE 事件，忽略其他类型
+            if (eventType != CanalEntry.EventType.INSERT && eventType != CanalEntry.EventType.UPDATE) {
+                continue;
+            }
+            ArrayNode dataArray = objectMapper.createArrayNode();
+
+            for (CanalEntry.RowData rowData : rowChange.getRowDatasList()) {
+                ObjectNode rowNode = objectMapper.createObjectNode();
+                for (CanalEntry.Column col : rowData.getAfterColumnsList()) {
+                    // 提取 payload 字段值（JSON 字符串），供下游消费
+                    if ("payload".equalsIgnoreCase(col.getName())) {
+                        rowNode.put("payload", col.getValue());
+                    }
+                }
+                dataArray.add(rowNode);
+            }
+
+            ObjectNode msgNode = objectMapper.createObjectNode();
+            msgNode.put("table", entry.getHeader().getTableName());
+            msgNode.put("type", eventType == CanalEntry.EventType.INSERT ? "INSERT" : "UPDATE");
+            msgNode.set("data", dataArray);
+
+            // 等待 Kafka broker 确认，防止异步发送失败后仍推进 Canal 位点。
+            String json = objectMapper.writeValueAsString(msgNode);
+            kafka.send(OutboxTopics.CANAL_OUTBOX, json).get();
+        }
     }
 
     /**
