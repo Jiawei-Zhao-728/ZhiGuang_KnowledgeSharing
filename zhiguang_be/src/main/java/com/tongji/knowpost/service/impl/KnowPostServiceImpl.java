@@ -163,13 +163,9 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         // 元数据变更后写入 Outbox 事件，驱动搜索索引更新
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostMetadataUpdated", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after metadata update failed, post {}: {}", id, e.getMessage());
-        }
+        long outId = idGen.nextId();
+        String payload = serializeOutboxPayload(Map.of("entity", "knowpost", "op", "upsert", "id", id));
+        outboxMapper.insert(outId, "knowpost", id, "KnowPostMetadataUpdated", payload);
 
         invalidateCache(id);
     }
@@ -189,13 +185,9 @@ public class KnowPostServiceImpl implements KnowPostService {
         } catch (Exception ignored) {}
 
         // 写入 Outbox 事件，驱动搜索索引增量更新
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostPublished", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after publish failed, post {}: {}", id, e.getMessage());
-        }
+        long outId = idGen.nextId();
+        String payload = serializeOutboxPayload(Map.of("entity", "knowpost", "op", "upsert", "id", id));
+        outboxMapper.insert(outId, "knowpost", id, "KnowPostPublished", payload);
 
         // 发布成功后触发一次预索引，减少首次问答冷启动
         try {
@@ -254,13 +246,9 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         // 写入 Outbox 事件，驱动搜索索引软删
-        try {
-            long outId = idGen.nextId();
-            String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "delete", "id", id));
-            outboxMapper.insert(outId, "knowpost", id, "KnowPostDeleted", payload);
-        } catch (Exception e) {
-            log.warn("Outbox event after delete failed, post {}: {}", id, e.getMessage());
-        }
+        long outId = idGen.nextId();
+        String payload = serializeOutboxPayload(Map.of("entity", "knowpost", "op", "delete", "id", id));
+        outboxMapper.insert(outId, "knowpost", id, "KnowPostDeleted", payload);
 
         invalidateCache(id);
     }
@@ -285,6 +273,14 @@ public class KnowPostServiceImpl implements KnowPostService {
             return objectMapper.writeValueAsString(list);
         } catch (JsonProcessingException e) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "JSON 处理失败");
+        }
+    }
+
+    private String serializeOutboxPayload(Object payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Outbox payload serialization failed", e);
         }
     }
 

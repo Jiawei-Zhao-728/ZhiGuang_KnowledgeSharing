@@ -1,5 +1,6 @@
 package com.tongji.relation.service.impl;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.tongji.relation.mapper.RelationMapper;
 import com.tongji.relation.service.RelationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -92,11 +93,9 @@ public class RelationServiceImpl implements RelationService {
         int inserted = mapper.insertFollowing(id, fromUserId, toUserId, 1);
 
         if (inserted > 0) {
-            try {
-                Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
-                String payload = objectMapper.writeValueAsString(new RelationEvent("FollowCreated", fromUserId, toUserId, id));
-                outboxMapper.insert(outId, "following", id, "FollowCreated", payload);
-            } catch (Exception ignored) {}
+            Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
+            String payload = serializeOutboxPayload(new RelationEvent("FollowCreated", fromUserId, toUserId, id));
+            outboxMapper.insert(outId, "following", id, "FollowCreated", payload);
 
             return true;
         }
@@ -114,11 +113,9 @@ public class RelationServiceImpl implements RelationService {
     public boolean unfollow(long fromUserId, long toUserId) {
         int updated = mapper.cancelFollowing(fromUserId, toUserId);
         if (updated > 0) {
-            try {
-                Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
-                String payload = objectMapper.writeValueAsString(new RelationEvent("FollowCanceled", fromUserId, toUserId, null));
-                outboxMapper.insert(outId, "following", null, "FollowCanceled", payload);
-            } catch (Exception ignored) {}
+            Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
+            String payload = serializeOutboxPayload(new RelationEvent("FollowCanceled", fromUserId, toUserId, null));
+            outboxMapper.insert(outId, "following", null, "FollowCanceled", payload);
             return true;
         }
         return false;
@@ -438,4 +435,12 @@ public class RelationServiceImpl implements RelationService {
             redis.call('PEXPIRE', key, 60000)
             return 1
             """;
+
+    private String serializeOutboxPayload(Object payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Outbox payload serialization failed", e);
+        }
+    }
 }
