@@ -27,20 +27,15 @@ public class CounterAggregationConsumer {
 
     private final ObjectMapper objectMapper;
     private final StringRedisTemplate redis;
-    private final DefaultRedisScript<Long> incrScript;
-    private final DefaultRedisScript<Long> decrScript;
+    private final DefaultRedisScript<Long> flushFieldScript;
 
     // 使用 Redis Hash 作为持久化聚合桶：agg:{schema}:{etype}:{eid} ，field=idx ，value=delta
     public CounterAggregationConsumer(ObjectMapper objectMapper, StringRedisTemplate redis) {
         this.objectMapper = objectMapper;
         this.redis = redis;
-        this.incrScript = new DefaultRedisScript<>();
-        this.incrScript.setResultType(Long.class);
-        this.incrScript.setScriptText(INCR_FIELD_LUA); // 原子将增量折叠到 SDS 指定段（大端 32 位）
-        
-        this.decrScript = new DefaultRedisScript<>();
-        this.decrScript.setResultType(Long.class);
-        this.decrScript.setScriptText(DECR_FIELD_LUA);
+        this.flushFieldScript = new DefaultRedisScript<>();
+        this.flushFieldScript.setResultType(Long.class);
+        this.flushFieldScript.setScriptText(FLUSH_FIELD_LUA);
     }
 
     /**
@@ -107,34 +102,38 @@ public class CounterAggregationConsumer {
                 }
 
                 try {
-                    redis.execute(incrScript, List.of(cntKey),
+                    // 在同一个 Lua 调用中读取聚合增量、更新 SDS 并清除已应用增量。
+                    // Redis 串行执行脚本，因此并发到达的新增量会留在聚合桶供下一轮处理，
+                    // 且网络异常不会留下“SDS 已增加但聚合增量未扣除”的重复计数窗口。
+                    redis.execute(flushFieldScript, List.of(cntKey, aggKey),
                             String.valueOf(CounterSchema.SCHEMA_LEN),
                             String.valueOf(CounterSchema.FIELD_SIZE),
                             String.valueOf(idx),
-                            String.valueOf(delta));
-
-                    // 成功后扣减该字段，若结果为0则删除，避免并发写入丢失
-                    redis.execute(decrScript, List.of(aggKey), field, String.valueOf(delta));
+                            field);
                 } catch (Exception ex) {
                     // 留存字段，下一轮重试
                 }
             }
-            // 如 Hash 已为空，删除聚合桶Key
-            // 目的：降低键空间噪音，避免后续无效扫描
-            Long size = redis.opsForHash().size(aggKey);
-            if (size == 0L) {
-                redis.delete(aggKey);
-            }
+            // HDEL 删除最后一个字段时 Redis 会自动移除空 Hash；不要在这里先检查大小再 DEL，
+            // 否则检查与删除之间到达的新事件可能被一并删除。
         }
     }
 
-    private static final String INCR_FIELD_LUA = """
+    private static final String FLUSH_FIELD_LUA = """
             
             local cntKey = KEYS[1]
+            local aggKey = KEYS[2]
             local schemaLen = tonumber(ARGV[1])
             local fieldSize = tonumber(ARGV[2]) -- 固定为4
             local idx = tonumber(ARGV[3])
-            local delta = tonumber(ARGV[4])
+            local field = ARGV[4]
+            local deltaRaw = redis.call('HGET', aggKey, field)
+            if not deltaRaw then return 0 end
+            local delta = tonumber(deltaRaw)
+            if not delta or delta == 0 then
+              redis.call('HDEL', aggKey, field)
+              return 0
+            end
             
             local function read32be(s, off)
               local b = {string.byte(s, off+1, off+4)}
@@ -157,17 +156,7 @@ public class CounterAggregationConsumer {
             local seg = write32be(v)
             cnt = string.sub(cnt, 1, off) .. seg .. string.sub(cnt, off+fieldSize+1)
             redis.call('SET', cntKey, cnt)
+            redis.call('HDEL', aggKey, field)
             return 1
-            """;
-
-    private static final String DECR_FIELD_LUA = """
-            local key = KEYS[1]
-            local field = ARGV[1]
-            local delta = tonumber(ARGV[2])
-            local v = redis.call('HINCRBY', key, field, -delta)
-            if v == 0 then
-                redis.call('HDEL', key, field)
-            end
-            return v
             """;
 }
