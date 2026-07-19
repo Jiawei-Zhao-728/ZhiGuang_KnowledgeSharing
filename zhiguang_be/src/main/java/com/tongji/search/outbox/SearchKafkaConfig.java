@@ -1,6 +1,6 @@
 package com.tongji.search.outbox;
 
-import org.springframework.boot.autoconfigure.kafka.DefaultKafkaListenerContainerFactoryConfigurer;
+import org.springframework.boot.autoconfigure.kafka.ConcurrentKafkaListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -16,7 +16,7 @@ public class SearchKafkaConfig {
 
     @Bean("searchKafkaListenerContainerFactory")
     public ConcurrentKafkaListenerContainerFactory<Object, Object> searchKafkaListenerContainerFactory(
-            DefaultKafkaListenerContainerFactoryConfigurer configurer,
+            ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
             ConsumerFactory<Object, Object> consumerFactory) {
         ConcurrentKafkaListenerContainerFactory<Object, Object> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
