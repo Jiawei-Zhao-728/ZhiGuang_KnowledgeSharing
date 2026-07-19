@@ -25,7 +25,11 @@ public class CanalOutboxConsumerSearch {
     /**
      * 消费 outbox 消息，解析合法行并按实体类型更新索引。
      */
-    @KafkaListener(topics = OutboxTopics.CANAL_OUTBOX, groupId = "search-index-consumer")
+    @KafkaListener(
+            topics = OutboxTopics.CANAL_OUTBOX,
+            groupId = "search-index-consumer",
+            containerFactory = "searchKafkaListenerContainerFactory"
+    )
     public void onMessage(String message, Acknowledgment ack) {
         try {
             List<JsonNode> rows = OutboxMessageUtil.extractRows(objectMapper, message);
@@ -58,7 +62,9 @@ public class CanalOutboxConsumerSearch {
             }
             // 提交位点，确保“已处理”的语义
             ack.acknowledge();
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to process search outbox message", e);
+        }
     }
 
     private String text(JsonNode n) {
