@@ -35,16 +35,16 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
     }
 
     /**
-     * 判断刷新令牌是否仍有效。
+     * 原子读取并删除刷新令牌，确保同一令牌只能轮换一次。
      *
      * @param userId  用户 ID。
      * @param tokenId 刷新令牌 ID。
-     * @return 是否有效（键存在且值为 "1"）。
+     * @return 白名单记录存在且值为 "1" 时返回 true。
      */
     @Override
-    public boolean isTokenValid(long userId, String tokenId) {
+    public boolean consumeToken(long userId, String tokenId) {
         String key = key(userId, tokenId);
-        return Objects.equals("1", redisTemplate.opsForValue().get(key));
+        return Objects.equals("1", redisTemplate.opsForValue().getAndDelete(key));
     }
 
     /**

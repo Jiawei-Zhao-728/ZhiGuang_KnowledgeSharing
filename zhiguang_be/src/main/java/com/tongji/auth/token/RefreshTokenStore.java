@@ -20,13 +20,13 @@ public interface RefreshTokenStore {
     void storeToken(long userId, String tokenId, Duration ttl);
 
     /**
-     * 校验刷新令牌是否仍然有效（在白名单内且未过期）。
+     * 原子消费刷新令牌白名单记录。
      *
      * @param userId  用户 ID。
      * @param tokenId 刷新令牌 ID（jti）。
-     * @return 是否有效。
+     * @return 记录存在且成功消费时返回 true，否则返回 false。
      */
-    boolean isTokenValid(long userId, String tokenId);
+    boolean consumeToken(long userId, String tokenId);
 
     /**
      * 撤销指定刷新令牌（从白名单移除）。
