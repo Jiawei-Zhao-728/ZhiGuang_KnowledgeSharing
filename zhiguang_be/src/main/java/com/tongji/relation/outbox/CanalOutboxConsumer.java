@@ -37,23 +37,30 @@ public class CanalOutboxConsumer {
      * @param ack 位点确认对象
      */
     @KafkaListener(topics = OutboxTopics.CANAL_OUTBOX, groupId = "relation-outbox-consumer")
-    public void onMessage(String message, Acknowledgment ack) {
-        try {
-            List<JsonNode> rows = OutboxMessageUtil.extractRows(objectMapper, message);
-            if (rows.isEmpty()) {
-                ack.acknowledge();
-                return;
-            }
-            for (JsonNode row : rows) {
-                JsonNode payloadNode = row.get("payload");
-                if (payloadNode == null) {
-                    continue;
-                }
-                
-                RelationEvent evt = objectMapper.readValue(payloadNode.asText(), RelationEvent.class);
-                processor.process(evt);
-            }
+    public void onMessage(String message, Acknowledgment ack) throws Exception {
+        List<JsonNode> rows = OutboxMessageUtil.extractRows(objectMapper, message);
+        if (rows.isEmpty()) {
             ack.acknowledge();
-        } catch (Exception ignored) {}
+            return;
+        }
+        for (JsonNode row : rows) {
+            if (!"following".equals(text(row.get("aggregate_type")))) {
+                continue;
+            }
+
+            JsonNode payloadNode = row.get("payload");
+            String eventId = text(row.get("id"));
+            if (payloadNode == null || eventId == null || eventId.isBlank()) {
+                throw new IllegalArgumentException("Relation outbox row is missing payload or ID");
+            }
+
+            RelationEvent evt = objectMapper.readValue(payloadNode.asText(), RelationEvent.class);
+            processor.process(evt, eventId);
+        }
+        ack.acknowledge();
+    }
+
+    private String text(JsonNode node) {
+        return node == null || node.isNull() ? null : node.asText();
     }
 }
