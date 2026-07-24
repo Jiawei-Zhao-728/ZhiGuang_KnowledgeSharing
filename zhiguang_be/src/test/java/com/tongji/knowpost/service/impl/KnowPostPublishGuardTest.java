@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
@@ -99,7 +100,7 @@ class KnowPostPublishGuardTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("草稿不存在或无权限");
 
-        verify(userCounterService, never()).incrementPosts(anyLong(), anyLong());
+        verify(userCounterService, never()).incrementPosts(anyLong(), anyInt());
         verify(outboxMapper, never()).insert(anyLong(), anyString(), anyLong(), anyString(), anyString());
         verify(ragIndexService, never()).ensureIndexed(anyLong());
     }
