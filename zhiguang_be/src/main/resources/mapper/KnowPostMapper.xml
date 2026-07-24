@@ -68,7 +68,7 @@
     <update id="publish">
         UPDATE know_posts
         SET status = 'published', publish_time = NOW(), update_time = NOW()
-        WHERE id = #{id} AND creator_id = #{creatorId}
+        WHERE id = #{id} AND creator_id = #{creatorId} AND status = 'draft'
     </update>
 
     <!-- 设置置顶 -->
