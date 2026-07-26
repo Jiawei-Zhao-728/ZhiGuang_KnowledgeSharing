@@ -6,7 +6,6 @@ import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.tongji.knowpost.mapper.KnowPostMapper;
 import com.tongji.knowpost.model.KnowPostDetailRow;
 import com.tongji.config.EsProperties;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -21,22 +20,43 @@ import java.util.*;
  * RAG 索引构建服务：
  * - 将公开且已发布的知文切片并写入向量库
  * - 通过指纹（SHA256/ETag）判断是否需要重建，保证幂等
- * - 采用 delete-by-query 清理旧切片，再批量 upsert 新切片
+ * - 先写入新切片，成功后再清理旧切片，避免 add 失败导致向量被清空
  */
 @Service
-@RequiredArgsConstructor
 public class RagIndexService {
     private static final Logger log = LoggerFactory.getLogger(RagIndexService.class);
+    private static final String META_POST_ID = "postId";
+    private static final String META_INDEX_BATCH_ID = "indexBatchId";
+
     // 向量库封装（Elasticsearch VectorStore），负责写入/检索向量
     private final VectorStore vectorStore;
     // 数据访问：根据 postId 查询知文详情（含 contentUrl、指纹等）
     private final KnowPostMapper knowPostMapper;
     // 拉取 Markdown 正文内容
-    private final RestTemplate http = new RestTemplate();
+    private final RestTemplate http;
     // 直接使用 ES 客户端做指纹判断和删除旧切片
     private final ElasticsearchClient es;
     // ES 相关配置（索引名等）
     private final EsProperties esProps;
+
+    public RagIndexService(VectorStore vectorStore,
+                           KnowPostMapper knowPostMapper,
+                           ElasticsearchClient es,
+                           EsProperties esProps) {
+        this(vectorStore, knowPostMapper, es, esProps, new RestTemplate());
+    }
+
+    RagIndexService(VectorStore vectorStore,
+                    KnowPostMapper knowPostMapper,
+                    ElasticsearchClient es,
+                    EsProperties esProps,
+                    RestTemplate http) {
+        this.vectorStore = vectorStore;
+        this.knowPostMapper = knowPostMapper;
+        this.es = es;
+        this.esProps = esProps;
+        this.http = http;
+    }
 
     public void ensureIndexed(long postId) {
         // 当前策略：在问答前直接尝试重建（指纹未变化时会跳过）
@@ -79,30 +99,34 @@ public class RagIndexService {
 
         // 先按 Markdown 标题切段，再做固定长度切片（带重叠）
         List<String> chunks = chunkMarkdown(text);
-        // 幂等 upsert：先删除旧切片
-        deleteExistingChunks(postId);
+        // 本批次 ID：写入成功后只删除不含该批次标记的旧切片，避免 add 失败时清空可用向量
+        String indexBatchId = UUID.randomUUID().toString();
 
         // 组装 Document（文本 + 业务元数据），用于向量写入与检索过滤
         List<Document> docs = new ArrayList<>(chunks.size());
         for (int i = 0; i < chunks.size(); i++) {
             String cid = postId + "#" + i;
             Map<String, Object> meta = new HashMap<>();
-            meta.put("postId", String.valueOf(postId));
+            meta.put(META_POST_ID, String.valueOf(postId));
             meta.put("chunkId", cid);
             meta.put("position", i);
             meta.put("contentEtag", currentEtag);
             meta.put("contentSha256", currentSha);
             meta.put("contentUrl", row.getContentUrl());
             meta.put("title", row.getTitle());
+            meta.put(META_INDEX_BATCH_ID, indexBatchId);
             docs.add(new Document(chunks.get(i), meta));
         }
         try {
-            // 批量写入向量库
+            // 批量写入向量库：必须先于旧切片删除，否则 add 失败会造成不可恢复的向量丢失
             vectorStore.add(docs);
         } catch (Exception e) {
-            log.error("VectorStore add failed: {}", e.getMessage());
-            return 0;
+            log.error("VectorStore add failed for post {}: {}", postId, e.getMessage());
+            throw new IllegalStateException("Failed to index post " + postId, e);
         }
+
+        // 写入成功后再清理本帖旧批次切片
+        deleteStaleChunks(postId, indexBatchId);
         // 返回本次写入的切片数量
         return docs.size();
     }
@@ -122,7 +146,7 @@ public class RagIndexService {
                             .index(esProps.getIndex())
                             .size(1)
                             .query(q -> q.term(t -> t
-                                    .field("metadata.postId")
+                                    .field("metadata." + META_POST_ID)
                                     .value(v -> v.stringValue(String.valueOf(postId))))),
                     Map.class);
             List<Hit<Map>> hits = resp.hits().hits();
@@ -147,18 +171,23 @@ public class RagIndexService {
     }
 
     /**
-     * 删除旧切片：按 metadata.postId 精确删除，确保 upsert 幂等
+     * 删除本帖中不属于当前索引批次的旧切片。
+     * 仅在新切片写入成功后调用，保证 add 失败时旧向量仍可用。
      */
-    private void deleteExistingChunks(long postId) {
+    private void deleteStaleChunks(long postId, String indexBatchId) {
         try {
             if (!StringUtils.hasText(esProps.getIndex())) return;
             es.deleteByQuery(d -> d
                     .index(esProps.getIndex())
-                    .query(q -> q.term(t -> t
-                            .field("metadata.postId")
-                            .value(v -> v.stringValue(String.valueOf(postId))))));
+                    .query(q -> q.bool(b -> b
+                            .filter(f -> f.term(t -> t
+                                    .field("metadata." + META_POST_ID)
+                                    .value(v -> v.stringValue(String.valueOf(postId)))))
+                            .mustNot(mn -> mn.term(t -> t
+                                    .field("metadata." + META_INDEX_BATCH_ID)
+                                    .value(v -> v.stringValue(indexBatchId)))))));
         } catch (Exception e) {
-            log.warn("Delete old chunks failed for post {}: {}", postId, e.getMessage());
+            log.warn("Delete stale chunks failed for post {}: {}", postId, e.getMessage());
         }
     }
 
