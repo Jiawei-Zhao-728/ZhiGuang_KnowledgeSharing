@@ -54,12 +54,32 @@ public class CounterAggregationConsumer {
         String aggKey = CounterKeys.aggKey(evt.getEntityType(), evt.getEntityId());
         String field = String.valueOf(evt.getIdx());
         try {
+            // SDS 重建会先递增世代再按位图回写；旧世代事件已包含在位图中，再写入聚合桶会永久多计
+            if (isStaleEpoch(evt)) {
+                ack.acknowledge();
+                return;
+            }
             // 将增量持久化到 Redis Hash
             redis.opsForHash().increment(aggKey, field, evt.getDelta());
             // 成功后提交位点，绑定“已持久化”语义
             ack.acknowledge();
         } catch (Exception ex) {
             // 不提交位点以便重试
+        }
+    }
+
+    /**
+     * 事件世代小于当前 SDS 重建世代时视为过期。
+     */
+    boolean isStaleEpoch(CounterEvent evt) {
+        String raw = redis.opsForValue().get(CounterKeys.epochKey(evt.getEntityType(), evt.getEntityId()));
+        if (raw == null || raw.isBlank()) {
+            return false;
+        }
+        try {
+            return evt.getEpoch() < Long.parseLong(raw);
+        } catch (NumberFormatException ex) {
+            return false;
         }
     }
 

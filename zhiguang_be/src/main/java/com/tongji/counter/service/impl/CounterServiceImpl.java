@@ -111,23 +111,43 @@ public class CounterServiceImpl implements CounterService {
      * @param add 是否置位（true=添加，false=移除）
      */
     private boolean toggle(String etype, String eid, long uid, String metric, int idx, boolean add) {
-        // 固定分片定位：按用户ID映射到 chunk 与分片内 bit 偏移，避免单键膨胀与热点
-        long chunk = BitmapShard.chunkOf(uid);
-        // 分片内位偏移
-        long bit = BitmapShard.bitOf(uid);
-        String bmKey = CounterKeys.bitmapKey(metric, etype, eid, chunk);
-        List<String> keys = List.of(bmKey);
-        List<String> args = List.of(String.valueOf(bit), add ? "add" : "remove");
-        Long changed = redis.execute(toggleScript, keys, args.toArray());
-        boolean ok = changed == 1L;
-        if (ok) {
-            int delta = add ? 1 : -1;
-            // 产出计数事件（异步聚合），分区按实体维度保证同实体事件顺序
-            eventProducer.publish(CounterEvent.of(etype, eid, metric, idx, uid, delta));
-            // 本地事件：触发缓存失效/旁路更新等快速路径
-            eventPublisher.publishEvent(CounterEvent.of(etype, eid, metric, idx, uid, delta));
+        // 与 SDS 重建共用锁：避免重建清空聚合桶时并发点赞事件被丢掉或重复加算
+        RLock lock = redisson.getLock(CounterKeys.rebuildLockKey(etype, eid));
+        lock.lock();
+        try {
+            // 固定分片定位：按用户ID映射到 chunk 与分片内 bit 偏移，避免单键膨胀与热点
+            long chunk = BitmapShard.chunkOf(uid);
+            // 分片内位偏移
+            long bit = BitmapShard.bitOf(uid);
+            String bmKey = CounterKeys.bitmapKey(metric, etype, eid, chunk);
+            List<String> keys = List.of(bmKey);
+            List<String> args = List.of(String.valueOf(bit), add ? "add" : "remove");
+            Long changed = redis.execute(toggleScript, keys, args.toArray());
+            boolean ok = changed == 1L;
+            if (ok) {
+                int delta = add ? 1 : -1;
+                long epoch = currentEpoch(etype, eid);
+                // 产出计数事件（异步聚合），分区按实体维度保证同实体事件顺序
+                eventProducer.publish(CounterEvent.of(etype, eid, metric, idx, uid, delta, epoch));
+                // 本地事件：触发缓存失效/旁路更新等快速路径
+                eventPublisher.publishEvent(CounterEvent.of(etype, eid, metric, idx, uid, delta, epoch));
+            }
+            return ok;
+        } finally {
+            lock.unlock();
         }
-        return ok;
+    }
+
+    private long currentEpoch(String entityType, String entityId) {
+        String raw = redis.opsForValue().get(CounterKeys.epochKey(entityType, entityId));
+        if (raw == null || raw.isBlank()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException ex) {
+            return 0L;
+        }
     }
 
     /**
@@ -162,7 +182,7 @@ public class CounterServiceImpl implements CounterService {
                 return result;
             }
 
-            String lockKey = String.format("lock:sds-rebuild:%s:%s", entityType, entityId);
+            String lockKey = CounterKeys.rebuildLockKey(entityType, entityId);
 
             RLock lock = redisson.getLock(lockKey);
             boolean locked = false;
@@ -177,6 +197,8 @@ public class CounterServiceImpl implements CounterService {
                     }
                     return result;
                 }
+                // 先提升世代，再按位图重建：持锁期间 toggle 会等待，重建前已发出的事件带旧 epoch，聚合时丢弃
+                redis.opsForValue().increment(CounterKeys.epochKey(entityType, entityId));
                 // 依据位图分片统计真实计数（仅由持锁者执行重建）
                 byte[] newSds = new byte[expectedLen];
                 List<String> rebuildFields = new ArrayList<>();
