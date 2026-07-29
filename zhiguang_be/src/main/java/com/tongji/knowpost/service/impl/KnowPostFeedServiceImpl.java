@@ -36,7 +36,8 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
     private final Cache<String, FeedPageResponse> feedMineCache;
     private final HotKeyDetector hotKey;
     private static final Logger log = LoggerFactory.getLogger(KnowPostFeedServiceImpl.class);
-    private static final int LAYOUT_VER = 1;
+    // Bumped when public feed fragment key layout/semantics change (e.g. id-list order).
+    private static final int LAYOUT_VER = 2;
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
 
     /**
@@ -95,8 +96,8 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         // 按小时分片的片段缓存键：降低跨小时内容更新导致的大面积失效风险
         // 将分页维度（size/page）与时间维度（hourSlot）组合，避免热门页在整站失效时同时回源
         long hourSlot = System.currentTimeMillis() / 3600000L;
-        String idsKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage;
-        String hasMoreKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage + ":hasMore";
+        String idsKey = "feed:public:ids:v" + LAYOUT_VER + ":" + safeSize + ":" + hourSlot + ":" + safePage;
+        String hasMoreKey = "feed:public:ids:v" + LAYOUT_VER + ":" + safeSize + ":" + hourSlot + ":" + safePage + ":hasMore";
 
         // L1: 先从本地缓存拿数据，高并发时抗 80% 流量
         FeedPageResponse local = feedPublicCache.getIfPresent(localPageKey);
@@ -337,7 +338,11 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         }
 
         if (!idVals.isEmpty()) {
-            redis.opsForList().leftPushAll(idsKey, idVals);
+            // Replace the list atomically from the caller's perspective: delete then RPUSH
+            // preserves DB order (newest-first). LPUSH would reverse the sequence, so cached
+            // feed pages would serve oldest-first after the first cache fill.
+            redis.delete(idsKey);
+            redis.opsForList().rightPushAll(idsKey, idVals);
             redis.expire(idsKey, frTtl);
             // 软缓存 hasMore：仅在满页时缓存 true，TTL 很短
             if (idVals.size() == size && hasMore) {
