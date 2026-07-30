@@ -89,6 +89,8 @@ public class RelationServiceImpl implements RelationService {
         }
 
         long id = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
+        // MySQL returns 0 when the pair is already active (see RelationMapper.xml).
+        // Emitting FollowCreated on no-ops would re-increment follower/following counters.
         int inserted = mapper.insertFollowing(id, fromUserId, toUserId, 1);
 
         if (inserted > 0) {
@@ -100,7 +102,8 @@ public class RelationServiceImpl implements RelationService {
 
             return true;
         }
-        return false;
+        // Idempotent success when already following; false only when insert truly failed.
+        return mapper.existsFollowing(fromUserId, toUserId) > 0;
     }
 
     /**
