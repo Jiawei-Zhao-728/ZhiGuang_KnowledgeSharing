@@ -57,8 +57,16 @@ public class StorageController {
         String ext = normalizeExt(request.ext(), request.contentType(), scene);
 
         if ("knowpost_content".equals(scene)) {
+            // 正文对象键是确定性的 posts/{id}/content.*；仅允许草稿阶段直传，
+            // 避免覆盖已发布正文且绕过 confirm/reindex 导致搜索/RAG 指纹失真。
+            if (!"draft".equalsIgnoreCase(post.getStatus())) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "仅草稿可上传正文内容");
+            }
             objectKey = "posts/" + postId + "/content" + ext;
         } else if ("knowpost_image".equals(scene)) {
+            if ("deleted".equalsIgnoreCase(post.getStatus())) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
+            }
             String date = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneId.of("UTC")).format(Instant.now());
             String rand = UUID.randomUUID().toString().replaceAll("-", "").substring(0, 8);
             objectKey = "posts/" + postId + "/images/" + date + "/" + rand + ext;
