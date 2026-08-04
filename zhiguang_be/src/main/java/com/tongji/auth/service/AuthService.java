@@ -187,14 +187,16 @@ public class AuthService {
         long userId = jwtService.extractUserId(jwt);
         String tokenId = jwtService.extractTokenId(jwt);
 
-        if (!refreshTokenStore.isTokenValid(userId, tokenId)) {
+        // 原子消费旧 refresh：避免并发 refresh 重放，并与密码重置的世代失效协同
+        var consumedEpoch = refreshTokenStore.consumeToken(userId, tokenId);
+        if (consumedEpoch.isEmpty()) {
             throw new BusinessException(ErrorCode.REFRESH_TOKEN_INVALID);
         }
 
         User user = findUserById(userId).orElseThrow(() -> new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND));
         TokenPair tokenPair = jwtService.issueTokenPair(user);
-        refreshTokenStore.revokeToken(userId, tokenId);
-        storeRefreshToken(userId, tokenPair);
+        // 沿用已校验世代写入，避免 revokeAll 提升世代后仍签发“新生代”令牌而逃逸
+        storeRefreshToken(userId, tokenPair, consumedEpoch.getAsLong());
 
         return mapToken(tokenPair);
     }
@@ -363,11 +365,21 @@ public class AuthService {
      * @param tokenPair 令牌对（含刷新令牌 ID 与过期时间）。
      */
     private void storeRefreshToken(Long userId, TokenPair tokenPair) {
+        Duration ttl = refreshTtl(tokenPair);
+        refreshTokenStore.storeToken(userId, tokenPair.refreshTokenId(), ttl);
+    }
+
+    private void storeRefreshToken(Long userId, TokenPair tokenPair, long epoch) {
+        Duration ttl = refreshTtl(tokenPair);
+        refreshTokenStore.storeToken(userId, tokenPair.refreshTokenId(), ttl, epoch);
+    }
+
+    private static Duration refreshTtl(TokenPair tokenPair) {
         Duration ttl = Duration.between(Instant.now(), tokenPair.refreshTokenExpiresAt());
         if (ttl.isNegative()) {
-            ttl = Duration.ZERO;
+            return Duration.ZERO;
         }
-        refreshTokenStore.storeToken(userId, tokenPair.refreshTokenId(), ttl);
+        return ttl;
     }
 
     /**
