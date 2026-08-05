@@ -1,5 +1,7 @@
 package com.tongji.counter.service.impl;
 
+import com.tongji.common.exception.BusinessException;
+import com.tongji.common.exception.ErrorCode;
 import com.tongji.counter.schema.CounterKeys;
 import com.tongji.counter.schema.CounterSchema;
 import com.tongji.counter.schema.BitmapShard;
@@ -122,12 +124,32 @@ public class CounterServiceImpl implements CounterService {
         boolean ok = changed == 1L;
         if (ok) {
             int delta = add ? 1 : -1;
-            // 产出计数事件（异步聚合），分区按实体维度保证同实体事件顺序
-            eventProducer.publish(CounterEvent.of(etype, eid, metric, idx, uid, delta));
+            CounterEvent event = CounterEvent.of(etype, eid, metric, idx, uid, delta);
+            try {
+                // 必须等 broker 确认；否则位图已变而 SDS 永远收不到增量
+                eventProducer.publish(event);
+            } catch (RuntimeException publishFailure) {
+                // 回滚位图事实，保持 isLiked/isFaved 与计数一致，并让调用方可重试
+                compensateBitmapToggle(keys, bit, add);
+                throw new BusinessException(ErrorCode.INTERNAL_ERROR, "计数事件发布失败，请重试");
+            }
             // 本地事件：触发缓存失效/旁路更新等快速路径
-            eventPublisher.publishEvent(CounterEvent.of(etype, eid, metric, idx, uid, delta));
+            eventPublisher.publishEvent(event);
         }
         return ok;
+    }
+
+    /**
+     * Kafka 发布失败时回滚位图切换，避免事实层与聚合层永久分叉。
+     */
+    private void compensateBitmapToggle(List<String> keys, long bit, boolean add) {
+        List<String> reverseArgs = List.of(String.valueOf(bit), add ? "remove" : "add");
+        try {
+            redis.execute(toggleScript, keys, reverseArgs.toArray());
+        } catch (Exception compensateFailure) {
+            log.error("Failed to compensate bitmap after counter event publish failure: key={} bit={} add={}",
+                    keys.isEmpty() ? null : keys.get(0), bit, add, compensateFailure);
+        }
     }
 
     /**
