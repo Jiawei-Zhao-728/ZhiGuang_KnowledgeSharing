@@ -48,8 +48,6 @@ class KnowPostDeletePostsCounterTest {
     @Mock
     private StringRedisTemplate redis;
     @Mock
-    private ValueOperations<String, String> valueOps;
-    @Mock
     private HotKeyDetector hotKeyDetector;
     @Mock
     private RagIndexService ragIndexService;
@@ -91,7 +89,8 @@ class KnowPostDeletePostsCounterTest {
         assertThat(end).isGreaterThan(start);
 
         String softDeleteSql = xml.substring(start, end);
-        assertThat(softDeleteSql).contains("status <> 'deleted'");
+        // MyBatis XML escapes <> as &lt;&gt;
+        assertThat(softDeleteSql).contains("status &lt;&gt; 'deleted'");
     }
 
     @Test
