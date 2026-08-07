@@ -243,14 +243,33 @@ public class KnowPostServiceImpl implements KnowPostService {
 
     /**
      * 软删除。
+     * <p>
+     * 仅对已发布内容对称扣减发文数：publish 时 +1，删除已发布内容时 -1。
+     * 草稿删除不改动 posts；重复删除已软删内容直接失败，避免重复扣减。
+     * </p>
      */
     @Transactional
     public void delete(long creatorId, long id) {
         invalidateCache(id);
 
+        KnowPost existing = mapper.findById(id);
+        if (existing == null
+                || existing.getCreatorId() == null
+                || existing.getCreatorId() != creatorId
+                || "deleted".equals(existing.getStatus())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
+        }
+
         int updated = mapper.softDelete(id, creatorId);
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
+        }
+
+        // publish 会 incrementPosts(+1)；删除已发布内容时必须对称 -1，否则个人页发文数永久偏高
+        if ("published".equals(existing.getStatus())) {
+            try {
+                userCounterService.incrementPosts(creatorId, -1);
+            } catch (Exception ignored) {}
         }
 
         // 写入 Outbox 事件，驱动搜索索引软删
