@@ -3,6 +3,8 @@ package com.tongji.llm.rag;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import com.tongji.common.exception.BusinessException;
+import com.tongji.common.exception.ErrorCode;
 import com.tongji.knowpost.mapper.KnowPostMapper;
 import com.tongji.knowpost.model.KnowPostDetailRow;
 import com.tongji.config.EsProperties;
@@ -41,6 +43,17 @@ public class RagIndexService {
     public void ensureIndexed(long postId) {
         // 当前策略：在问答前直接尝试重建（指纹未变化时会跳过）
         reindexSinglePost(postId);
+    }
+
+    /**
+     * 仅允许作者手动触发单篇索引重建，防止任意登录用户清空/重建他人向量切片。
+     */
+    public int reindexOwnedPost(long userId, long postId) {
+        KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
+        if (row == null || row.getCreatorId() == null || !row.getCreatorId().equals(userId)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在或无权限");
+        }
+        return reindexSinglePost(postId);
     }
 
     public int reindexSinglePost(long postId) {
