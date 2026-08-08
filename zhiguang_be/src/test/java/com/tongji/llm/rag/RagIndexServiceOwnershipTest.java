@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -55,7 +56,7 @@ class RagIndexServiceOwnershipTest {
 
         assertEquals(ErrorCode.BAD_REQUEST, ex.getErrorCode());
         verify(vectorStore, never()).add(any());
-        verify(es, never()).deleteByQuery(any());
+        verifyNoInteractions(es);
     }
 
     @Test
