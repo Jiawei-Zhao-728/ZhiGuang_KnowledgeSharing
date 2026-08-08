@@ -1,9 +1,12 @@
 package com.tongji.knowpost.api;
 
+import com.tongji.auth.token.JwtService;
 import com.tongji.llm.rag.RagIndexService;
 import com.tongji.llm.rag.RagQueryService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -16,6 +19,7 @@ public class KnowPostRagController {
 
     private final RagIndexService indexService;
     private final RagQueryService ragQueryService;
+    private final JwtService jwtService;
 
     /**
      * 单篇知文 RAG 问答（WebFlux + Flux 流式输出）。
@@ -31,9 +35,11 @@ public class KnowPostRagController {
 
     /**
      * 手动触发单篇索引重建（返回重建的切片数）。
+     * 仅作者可触发，避免跨用户清空/重建向量索引。
      */
     @PostMapping("/{id}/rag/reindex")
-    public int reindex(@PathVariable("id") long id) {
-        return indexService.reindexSinglePost(id);
+    public int reindex(@PathVariable("id") long id, @AuthenticationPrincipal Jwt jwt) {
+        long userId = jwtService.extractUserId(jwt);
+        return indexService.reindexOwnedPost(userId, id);
     }
 }
