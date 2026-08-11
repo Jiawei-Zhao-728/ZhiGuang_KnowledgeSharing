@@ -81,6 +81,14 @@ public class SearchIndexService {
             KnowPostDetailRow row = knowPostMapper.findDetailById(id);
             if (row == null) {
                 log.warn("Index upsert skipped: post {} not found", id);
+                softDeleteKnowPost(id);
+                return;
+            }
+            // Search is a public surface: only published+public posts may remain indexed.
+            // Non-public upserts must tombstone any stale ES document (e.g. after visibility change).
+            if (!isPubliclySearchable(row)) {
+                log.info("Removing post {} from search index: status={} visible={}", id, row.getStatus(), row.getVisible());
+                softDeleteKnowPost(id);
                 return;
             }
             Map<String, Object> doc = new HashMap<>();
@@ -248,6 +256,10 @@ public class SearchIndexService {
         }
 
         return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    private boolean isPubliclySearchable(KnowPostDetailRow row) {
+        return row != null && "published".equals(row.getStatus()) && "public".equals(row.getVisible());
     }
 
     /**
