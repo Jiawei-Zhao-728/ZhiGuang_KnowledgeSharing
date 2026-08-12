@@ -9,5 +9,13 @@ public final class UserCounterKeys {
     public static String sdsKey(long userId) {
         return "ucnt:" + userId; // 用户维度固定结构计数（SDS）键
     }
+
+    /**
+     * Generation key bumped on every SDS field increment.
+     * Rebuild compare-and-sets against this value so concurrent increments are not overwritten.
+     */
+    public static String genKey(long userId) {
+        return "ucnt:gen:" + userId;
+    }
 }
 
