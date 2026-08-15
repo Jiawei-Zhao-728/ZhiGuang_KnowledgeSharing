@@ -263,7 +263,21 @@ public class RelationServiceImpl implements RelationService {
         for (Long id : ids) {
             User u = m.get(id);
             if (u == null) continue;
-            out.add(new ProfileResponse(u.getId(), u.getNickname(), u.getAvatar(), u.getBio(), u.getZgId(), u.getGender(), u.getBirthday(), u.getSchool(), u.getPhone(), u.getEmail(), u.getTagsJson()));
+            // Phone/email are login identifiers used for password reset. Any authenticated
+            // caller can list another user's following/followers, so those fields must not
+            // appear in this public social-graph payload. Own-profile PII remains on /auth/me.
+            out.add(new ProfileResponse(
+                    u.getId(),
+                    u.getNickname(),
+                    u.getAvatar(),
+                    u.getBio(),
+                    u.getZgId(),
+                    u.getGender(),
+                    u.getBirthday(),
+                    u.getSchool(),
+                    null,
+                    null,
+                    u.getTagsJson()));
         }
         return out;
     }
