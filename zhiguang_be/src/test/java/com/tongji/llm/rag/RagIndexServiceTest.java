@@ -11,6 +11,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.vectorstore.VectorStore;
 
+import java.util.function.Function;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
@@ -44,7 +46,7 @@ class RagIndexServiceTest {
 
         assertThat(service.reindexSinglePost(42L)).isZero();
 
-        verify(es).deleteByQuery(any());
+        verifyDeleteByQuery();
         verify(vectorStore, never()).add(any());
     }
 
@@ -56,7 +58,7 @@ class RagIndexServiceTest {
 
         assertThat(service.reindexSinglePost(42L)).isZero();
 
-        verify(es).deleteByQuery(any());
+        verifyDeleteByQuery();
         verify(vectorStore, never()).add(any());
     }
 
@@ -67,7 +69,7 @@ class RagIndexServiceTest {
 
         assertThat(service.reindexSinglePost(42L)).isZero();
 
-        verify(es).deleteByQuery(any());
+        verifyDeleteByQuery();
         verify(vectorStore, never()).add(any());
     }
 
@@ -82,6 +84,11 @@ class RagIndexServiceTest {
         assertThat(service.isPubliclyQueryable(2L)).isFalse();
         assertThat(service.isPubliclyQueryable(3L)).isFalse();
         assertThat(service.isPubliclyQueryable(4L)).isFalse();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void verifyDeleteByQuery() throws Exception {
+        verify(es).deleteByQuery(any(Function.class));
     }
 
     private static KnowPostDetailRow row(String status, String visible) {
