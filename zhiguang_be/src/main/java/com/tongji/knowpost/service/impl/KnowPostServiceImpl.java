@@ -162,6 +162,10 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        if (visible != null && !"public".equalsIgnoreCase(visible)) {
+            purgeRagChunksQuietly(id, "metadata update");
+        }
+
         // 元数据变更后写入 Outbox 事件，驱动搜索索引更新
         try {
             long outId = idGen.nextId();
@@ -238,6 +242,10 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        if (!"public".equalsIgnoreCase(visible)) {
+            purgeRagChunksQuietly(id, "visibility change");
+        }
+
         invalidateCache(id);
     }
 
@@ -253,6 +261,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        purgeRagChunksQuietly(id, "delete");
+
         // 写入 Outbox 事件，驱动搜索索引软删
         try {
             long outId = idGen.nextId();
@@ -263,6 +273,14 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         invalidateCache(id);
+    }
+
+    private void purgeRagChunksQuietly(long id, String reason) {
+        try {
+            ragIndexService.purgeChunks(id);
+        } catch (Exception e) {
+            log.warn("RAG purge after {} failed, post {}: {}", reason, id, e.getMessage());
+        }
     }
 
     private boolean isValidVisible(String visible) {

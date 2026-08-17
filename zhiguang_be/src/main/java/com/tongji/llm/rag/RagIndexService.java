@@ -43,16 +43,33 @@ public class RagIndexService {
         reindexSinglePost(postId);
     }
 
+    /**
+     * 仅已发布且公开可见的知文允许进入共享 RAG 问答。
+     * 私密/删除/不存在的帖子不得被检索，即使向量库中仍残留切片。
+     */
+    public boolean isPubliclyQueryable(long postId) {
+        return isPublicPublished(knowPostMapper.findDetailById(postId));
+    }
+
+    /**
+     * 按 postId 删除向量切片。用于可见性降级或软删除后清理残留。
+     */
+    public void purgeChunks(long postId) {
+        deleteExistingChunks(postId);
+    }
+
     public int reindexSinglePost(long postId) {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {
             log.warn("Post {} not found", postId);
+            deleteExistingChunks(postId);
             return 0;
         }
 
-        // 仅索引公开的已发布知文
-        if (!"published".equalsIgnoreCase(row.getStatus()) || !"public".equalsIgnoreCase(row.getVisible())) {
-            log.warn("Post {} is not public/published, skip indexing", postId);
+        // 仅索引公开的已发布知文；非公开时必须清掉历史切片，避免私密/已删内容仍可被问答召回
+        if (!isPublicPublished(row)) {
+            log.warn("Post {} is not public/published, skip indexing and purge leftover chunks", postId);
+            deleteExistingChunks(postId);
             return 0;
         }
 
@@ -144,6 +161,12 @@ public class RagIndexService {
             log.warn("Fingerprint check failed for post {}: {}", postId, e.getMessage());
             return false;
         }
+    }
+
+    static boolean isPublicPublished(KnowPostDetailRow row) {
+        return row != null
+                && "published".equalsIgnoreCase(row.getStatus())
+                && "public".equalsIgnoreCase(row.getVisible());
     }
 
     /**

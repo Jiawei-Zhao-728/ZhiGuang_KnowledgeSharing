@@ -1,5 +1,7 @@
 package com.tongji.llm.rag;
 
+import com.tongji.common.exception.BusinessException;
+import com.tongji.common.exception.ErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
@@ -31,6 +33,12 @@ public class RagQueryService {
      * 使用 WebFlux 返回回答内容的流。
      */
     public Flux<String> streamAnswerFlux(long postId, String question, int topK, int maxTokens) {
+        // 匿名 QA 入口只允许公开已发布知文。私密/已删帖即使向量库残留切片也不得召回。
+        if (!indexService.isPubliclyQueryable(postId)) {
+            indexService.purgeChunks(postId);
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在或无权限");
+        }
+
         // 轻量保障：如索引不存在或指纹未变更则跳过，否则重建
         indexService.ensureIndexed(postId);
 
