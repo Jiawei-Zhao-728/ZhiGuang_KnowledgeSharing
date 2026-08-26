@@ -6,6 +6,7 @@ import com.tongji.auth.token.JwtService;
 import com.tongji.knowpost.mapper.KnowPostMapper;
 import com.tongji.knowpost.model.KnowPost;
 import com.tongji.storage.OssStorageService;
+import com.tongji.storage.StorageObjectKeys;
 import com.tongji.storage.api.dto.StoragePresignRequest;
 import com.tongji.storage.api.dto.StoragePresignResponse;
 import jakarta.validation.Valid;
@@ -57,11 +58,11 @@ public class StorageController {
         String ext = normalizeExt(request.ext(), request.contentType(), scene);
 
         if ("knowpost_content".equals(scene)) {
-            objectKey = "posts/" + postId + "/content" + ext;
+            objectKey = StorageObjectKeys.knowpostContentKey(postId, ext);
         } else if ("knowpost_image".equals(scene)) {
             String date = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneId.of("UTC")).format(Instant.now());
             String rand = UUID.randomUUID().toString().replaceAll("-", "").substring(0, 8);
-            objectKey = "posts/" + postId + "/images/" + date + "/" + rand + ext;
+            objectKey = StorageObjectKeys.knowpostImageKey(postId, date, rand, ext);
         } else {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的上传场景");
         }
