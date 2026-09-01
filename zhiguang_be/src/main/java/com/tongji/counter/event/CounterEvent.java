@@ -2,6 +2,8 @@ package com.tongji.counter.event;
 
 import lombok.Data;
 
+import java.util.UUID;
+
 /**
  * 计数事件模型。
  *
@@ -10,6 +12,10 @@ import lombok.Data;
  */
 @Data
 public class CounterEvent {
+    /**
+     * 单次事件 ID，供聚合消费者忽略 Kafka 重放。生产时生成；存量消息可为空。
+     */
+    private String eventId;
     private String entityType;
     private String entityId;
     private String metric; // like | fav（指标名称）
@@ -17,7 +23,11 @@ public class CounterEvent {
     private long userId;
     private int delta; // +1 / -1
 
+    public CounterEvent() {
+    }
+
     public CounterEvent(String entityType, String entityId, String metric, int idx, long userId, int delta) {
+        this.eventId = UUID.randomUUID().toString();
         this.entityType = entityType;
         this.entityId = entityId;
         this.metric = metric;

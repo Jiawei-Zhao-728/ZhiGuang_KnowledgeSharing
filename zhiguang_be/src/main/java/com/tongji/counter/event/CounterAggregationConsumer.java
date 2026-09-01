@@ -9,6 +9,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.util.Map;
 import java.util.Set;
@@ -29,6 +30,7 @@ public class CounterAggregationConsumer {
     private final StringRedisTemplate redis;
     private final DefaultRedisScript<Long> incrScript;
     private final DefaultRedisScript<Long> decrScript;
+    private final DefaultRedisScript<Long> applyOnceScript;
 
     // 使用 Redis Hash 作为持久化聚合桶：agg:{schema}:{etype}:{eid} ，field=idx ，value=delta
     public CounterAggregationConsumer(ObjectMapper objectMapper, StringRedisTemplate redis) {
@@ -41,6 +43,10 @@ public class CounterAggregationConsumer {
         this.decrScript = new DefaultRedisScript<>();
         this.decrScript.setResultType(Long.class);
         this.decrScript.setScriptText(DECR_FIELD_LUA);
+
+        this.applyOnceScript = new DefaultRedisScript<>();
+        this.applyOnceScript.setResultType(Long.class);
+        this.applyOnceScript.setScriptText(APPLY_ONCE_LUA);
     }
 
     /**
@@ -54,8 +60,16 @@ public class CounterAggregationConsumer {
         String aggKey = CounterKeys.aggKey(evt.getEntityType(), evt.getEntityId());
         String field = String.valueOf(evt.getIdx());
         try {
-            // 将增量持久化到 Redis Hash
-            redis.opsForHash().increment(aggKey, field, evt.getDelta());
+            // Kafka 至少一次投递：HINCRBY 成功但 ack 前崩溃会重放同一事件，导致 SDS 永久虚高。
+            // 用 Lua 将 SET NX 去重与 HINCRBY 做成同一原子步骤。
+            if (StringUtils.hasText(evt.getEventId())) {
+                String dedupKey = CounterKeys.aggDedupKey(evt.getEventId());
+                redis.execute(applyOnceScript, List.of(dedupKey, aggKey),
+                        field, String.valueOf(evt.getDelta()), String.valueOf(DEDUP_TTL_SECONDS));
+            } else {
+                // 无 eventId 的存量消息仍走原路径
+                redis.opsForHash().increment(aggKey, field, evt.getDelta());
+            }
             // 成功后提交位点，绑定“已持久化”语义
             ack.acknowledge();
         } catch (Exception ex) {
@@ -127,6 +141,24 @@ public class CounterAggregationConsumer {
             }
         }
     }
+
+    static final long DEDUP_TTL_SECONDS = 7L * 24 * 3600;
+
+    /**
+     * 原子领取 eventId（SET NX）并写入聚合增量；首次返回 1，重复投递返回 0。
+     */
+    private static final String APPLY_ONCE_LUA = """
+            local dedupKey = KEYS[1]
+            local aggKey = KEYS[2]
+            local field = ARGV[1]
+            local delta = tonumber(ARGV[2])
+            local ttl = tonumber(ARGV[3])
+            if redis.call('SET', dedupKey, '1', 'NX', 'EX', ttl) == false then
+              return 0
+            end
+            redis.call('HINCRBY', aggKey, field, delta)
+            return 1
+            """;
 
     private static final String INCR_FIELD_LUA = """
             

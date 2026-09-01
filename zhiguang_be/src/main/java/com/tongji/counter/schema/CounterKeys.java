@@ -19,4 +19,9 @@ public final class CounterKeys {
     public static String aggKey(String entityType, String entityId) {
         return String.format("agg:%s:%s:%s", CounterSchema.SCHEMA_ID, entityType, entityId); // 刷写前的增量存储桶
     }
+
+    /** 单条计数 Kafka 事件的去重键（SET NX 后才 HINCRBY）。 */
+    public static String aggDedupKey(String eventId) {
+        return "dedup:cnt:" + eventId;
+    }
 }
