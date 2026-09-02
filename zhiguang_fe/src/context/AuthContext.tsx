@@ -8,20 +8,22 @@ import {
   useState
 } from "react";
 import type { ReactNode } from "react";
+import { ApiError } from "@/services/apiClient";
 import { authService } from "@/services/authService";
 import type {
     AuthenticatedUser,
     LoginRequest,
-    LoginResponse,
     RegisterRequest,
     TokenResponse
 } from "@/types/auth";
+import {
+  isAccessExpiring,
+  shouldAdoptLocalTokensAfterRefreshFailure,
+  shouldRefreshAfterFetchUserFailure,
+  type StoredAuthTokens
+} from "@/context/authSession";
 
-type AuthTokens = {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;
-};
+type AuthTokens = StoredAuthTokens;
 
 type AuthContextValue = {
   user: AuthenticatedUser | null;
@@ -106,29 +108,130 @@ const toTokens = (token: TokenResponse): AuthTokens => ({
   expiresAt: parseInstantToMillis(token.accessTokenExpiresAt)
 });
 
+const httpStatusOf = (error: unknown): number | undefined =>
+  error instanceof ApiError ? error.status : undefined;
+
 type AuthProviderProps = {
   children: ReactNode;
 };
+
+let rotateInFlight: Promise<AuthTokens | null> | null = null;
 
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [tokens, setTokens] = useState<AuthTokens | null>(() => readStoredTokens());
   const [user, setUser] = useState<AuthenticatedUser | null>(() => readStoredUser());
   const [isLoading, setIsLoading] = useState<boolean>(!!tokens);
-  const fetchingRef = useRef<Promise<void> | null>(null);
+  const tokensRef = useRef<AuthTokens | null>(tokens);
+  const restoringRef = useRef<Promise<void> | null>(null);
 
-  const fetchUser = useCallback(async (accessToken: string) => {
+  const applyTokens = useCallback((next: AuthTokens | null) => {
+    tokensRef.current = next;
+    setTokens(next);
+    persistTokens(next);
+  }, []);
+
+  const clearSession = useCallback(() => {
+    tokensRef.current = null;
+    setTokens(null);
+    setUser(null);
+    persistTokens(null);
+    persistUser(null);
+  }, []);
+
+  const fetchUser = useCallback(async (accessToken: string): Promise<{ ok: true } | { ok: false; status?: number }> => {
     try {
       const profile = await authService.fetchCurrentUser(accessToken);
+      if (!tokensRef.current) {
+        return { ok: false };
+      }
       setUser(profile);
       persistUser(profile);
+      return { ok: true };
     } catch (error) {
       console.error("获取用户信息失败", error);
-      setUser(null);
-      setTokens(null);
-      persistTokens(null);
-      persistUser(null);
+      return { ok: false, status: httpStatusOf(error) };
     }
   }, []);
+
+  const rotateRefresh = useCallback(async (refreshToken: string): Promise<AuthTokens | null> => {
+    if (rotateInFlight) {
+      return rotateInFlight;
+    }
+    const task = (async () => {
+      try {
+        const result = await authService.refresh(refreshToken);
+        const current = tokensRef.current ?? readStoredTokens();
+        if (!current) {
+          return null;
+        }
+        if (current.refreshToken !== refreshToken) {
+          applyTokens(current);
+          return current;
+        }
+        const nextTokens = toTokens(result);
+        applyTokens(nextTokens);
+        return nextTokens;
+      } catch (error) {
+        console.error("刷新登录状态失败", error);
+        const local = readStoredTokens();
+        if (shouldAdoptLocalTokensAfterRefreshFailure(refreshToken, local) && local) {
+          applyTokens(local);
+          return local;
+        }
+        return null;
+      }
+    })().finally(() => {
+      rotateInFlight = null;
+    });
+    rotateInFlight = task;
+    return task;
+  }, [applyTokens]);
+
+  const restoreSession = useCallback(async (current: AuthTokens) => {
+    let tokensToUse = current;
+    let didRefresh = false;
+
+    if (isAccessExpiring(tokensToUse)) {
+      const refreshed = await rotateRefresh(tokensToUse.refreshToken);
+      if (!tokensRef.current) {
+        return;
+      }
+      if (!refreshed) {
+        clearSession();
+        return;
+      }
+      tokensToUse = refreshed;
+      didRefresh = true;
+    }
+
+    const result = await fetchUser(tokensToUse.accessToken);
+    if (!tokensRef.current) {
+      return;
+    }
+    if (result.ok) {
+      return;
+    }
+
+    if (shouldRefreshAfterFetchUserFailure(result.status) && !didRefresh) {
+      const refreshed = await rotateRefresh(tokensToUse.refreshToken);
+      if (!tokensRef.current) {
+        return;
+      }
+      if (!refreshed) {
+        clearSession();
+        return;
+      }
+      const retry = await fetchUser(refreshed.accessToken);
+      if (!tokensRef.current) {
+        return;
+      }
+      if (!retry.ok && shouldRefreshAfterFetchUserFailure(retry.status)) {
+        clearSession();
+      }
+      return;
+    }
+    // Network / 5xx: keep tokens and any cached profile.
+  }, [clearSession, fetchUser, rotateRefresh]);
 
   useEffect(() => {
     if (!tokens) {
@@ -136,79 +239,81 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       return;
     }
 
-    if (!fetchingRef.current) {
-      const task = fetchUser(tokens.accessToken).finally(() => {
-        fetchingRef.current = null;
+    if (!restoringRef.current) {
+      const task = restoreSession(tokens).finally(() => {
+        restoringRef.current = null;
         setIsLoading(false);
       });
-      fetchingRef.current = task;
+      restoringRef.current = task;
     }
-  }, [tokens, fetchUser]);
-
-  
+  }, [tokens, restoreSession]);
 
   const login = useCallback(
     async (payload: LoginRequest) => {
       const response = await authService.login(payload);
       const nextTokens = toTokens(response.token);
-      setTokens(nextTokens);
-      persistTokens(nextTokens);
+      applyTokens(nextTokens);
       setUser(response.user);
       persistUser(response.user);
       await fetchUser(nextTokens.accessToken);
     },
-    [fetchUser]
+    [applyTokens, fetchUser]
   );
 
   const register = useCallback(async (payload: RegisterRequest) => {
     const result = await authService.register(payload);
-    // 注册成功后直接登录：写入令牌与用户信息
     const nextTokens = toTokens(result.token);
-    setTokens(nextTokens);
-    persistTokens(nextTokens);
+    applyTokens(nextTokens);
     const userInfo = result.user as AuthenticatedUser;
     setUser(userInfo);
     persistUser(userInfo);
-    // 为保证信息最新，拉取一次 /auth/me
     await fetchUser(nextTokens.accessToken);
     return userInfo;
-  }, [fetchUser]);
+  }, [applyTokens, fetchUser]);
 
   const logout = useCallback(async () => {
-    if (tokens) {
+    const current = tokensRef.current;
+    if (current) {
       try {
-        await authService.logout({ refreshToken: tokens.refreshToken }, tokens.accessToken);
+        await authService.logout({ refreshToken: current.refreshToken }, current.accessToken);
       } catch (error) {
         console.warn("注销请求失败，继续清除本地状态", error);
       }
     }
-    setTokens(null);
-    setUser(null);
-    persistTokens(null);
-    persistUser(null);
-  }, [tokens]);
+    clearSession();
+  }, [clearSession]);
 
   const refresh = useCallback(async () => {
-    if (!tokens) return;
-    try {
-      if (Date.now() < tokens.expiresAt - 5_000) {
-        return;
-      }
-      const result = await authService.refresh(tokens.refreshToken);
-      const nextTokens = toTokens(result);
-      setTokens(nextTokens);
-      persistTokens(nextTokens);
-      await fetchUser(nextTokens.accessToken);
-    } catch (error) {
-      console.error("刷新登录状态失败", error);
-      await logout();
+    const current = tokensRef.current ?? readStoredTokens();
+    if (!current) return;
+    if (!isAccessExpiring(current)) {
+      return;
     }
-  }, [tokens, fetchUser, logout]);
+    const next = await rotateRefresh(current.refreshToken);
+    if (!next) {
+      clearSession();
+      return;
+    }
+    await fetchUser(next.accessToken);
+  }, [clearSession, fetchUser, rotateRefresh]);
 
   const reloadUser = useCallback(async () => {
-    if (!tokens) return;
-    await fetchUser(tokens.accessToken);
-  }, [tokens, fetchUser]);
+    const current = tokensRef.current;
+    if (!current) return;
+    const result = await fetchUser(current.accessToken);
+    if (result.ok) return;
+    if (shouldRefreshAfterFetchUserFailure(result.status)) {
+      const next = await rotateRefresh(current.refreshToken);
+      if (!next) {
+        clearSession();
+        return;
+      }
+      const retry = await fetchUser(next.accessToken);
+      if (!retry.ok && shouldRefreshAfterFetchUserFailure(retry.status)) {
+        clearSession();
+      }
+    }
+  }, [clearSession, fetchUser, rotateRefresh]);
 
   useEffect(() => {
     if (!tokens) {
@@ -219,6 +324,31 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [tokens, refresh]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [refresh]);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY) return;
+      const next = readStoredTokens();
+      tokensRef.current = next;
+      setTokens(next);
+      if (!next) {
+        setUser(null);
+        persistUser(null);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
