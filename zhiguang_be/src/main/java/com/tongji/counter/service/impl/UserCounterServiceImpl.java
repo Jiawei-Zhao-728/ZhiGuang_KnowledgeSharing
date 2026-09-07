@@ -11,8 +11,6 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -108,9 +106,10 @@ public class UserCounterServiceImpl implements UserCounterService {
             posts = idStr.size();
             long likeSum = 0L;
             long favSum = 0L;
-            Map<String, Map<String, Long>> counts = counterService.getCountsBatch("knowpost", idStr, List.of("like", "fav"));
-            for (String id : idStr) { // 聚合作者全部知文的获赞/获收藏总数
-                Map<String, Long> v = counts.get(id);
+            // 使用 getCounts（SDS 缺失时从位图重建），而不是 getCountsBatch（缺失即补零）。
+            // 否则 Kafka 延迟/SDS 被驱逐时，用户获赞/获藏会被永久写成 0。
+            for (String id : idStr) {
+                Map<String, Long> v = counterService.getCounts("knowpost", id, List.of("like", "fav"));
                 likeSum += v.getOrDefault("like", 0L);
                 favSum += v.getOrDefault("fav", 0L);
             }
