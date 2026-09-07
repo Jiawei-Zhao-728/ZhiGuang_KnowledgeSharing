@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.redisson.api.RedissonClient;
@@ -246,19 +247,21 @@ public class CounterServiceImpl implements CounterService {
             keys.add(CounterKeys.sdsKey(entityType, eid));
         }
 
-        // 管道批量 GET：将多个 SDS 读取合并到一次往返
+        // 管道批量 GET：将多个 SDS 读取合并到一次往返。
+        // 必须使用 byte[] 序列化：StringRedisTemplate 默认会把管道结果按 UTF-8 解成 String，
+        // 二进制 SDS（含 0x00 与非 UTF-8 字节）会丢失，导致 instanceof byte[] 永远失败并整批补零。
         List<Object> raws = redis.executePipelined((RedisCallback<Object>) connection -> {
             for (String k : keys) {
                 connection.stringCommands().get(k.getBytes(StandardCharsets.UTF_8));
             }
             return null;
-        });
+        }, RedisSerializer.byteArray());
 
         int expectedLen = CounterSchema.SCHEMA_LEN * CounterSchema.FIELD_SIZE;
         for (int i = 0; i < entityIds.size(); i++) {
             String eid = entityIds.get(i);
-            Object rawObj = i < raws.size() ? raws.get(i) : null;
-            byte[] raw = (rawObj instanceof byte[]) ? (byte[]) rawObj : null;
+            Object rawObj = (raws != null && i < raws.size()) ? raws.get(i) : null;
+            byte[] raw = (rawObj instanceof byte[] bytes) ? bytes : null;
 
             Map<String, Long> m = new LinkedHashMap<>();
             if (raw != null && raw.length == expectedLen) {
